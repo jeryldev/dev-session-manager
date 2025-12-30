@@ -1,10 +1,14 @@
 #!/usr/bin/env zsh
-# Dev session manager
+# Dev Session Manager
 # Quick development session bootstrapping with tmux
-# https://github.com/jeryldev/dev-session-manager
+#
+# Copyright (c) 2026 Jeryl Estopace
+# GitHub: https://github.com/jeryldev
+# LinkedIn: https://www.linkedin.com/in/jeryldev/
+# Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="1.0.0"
+DEV_VERSION="1.0.1"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"
@@ -86,6 +90,7 @@ _dev_check_tmux() {
     return 0
 }
 
+
 # Center text in a box
 _dev_center_text() {
     local text="$1"
@@ -115,7 +120,7 @@ dev() {
             _dev_show_prerequisites
 
             echo -e "${YELLOW}Commands:${NC}"
-            echo -e "  ${BLUE}dev <name>${NC}          Create or attach to a dev session"
+            echo -e "  ${BLUE}dev <name>${NC}         Create or attach to a dev session"
             echo -e "  ${BLUE}dev attach <name>${NC}  Attach to an existing dev session"
             echo -e "  ${BLUE}dev ls${NC}             List all dev sessions"
             echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session"
@@ -259,7 +264,7 @@ dev() {
             echo ""
             echo -e "${YELLOW}Pane splits:${NC}"
             echo -e "  ${BLUE}Prefix %${NC}          Split vertically (side by side)"
-            echo -e "  ${BLUE}Prefix \"${NC}          Split horizontally (top/bottom)"
+            echo -e "  ${BLUE}Prefix \"${NC}         Split horizontally (top/bottom)"
             echo -e "  ${BLUE}Prefix z${NC}          Toggle pane zoom (fullscreen)"
             echo -e "  ${BLUE}Prefix x${NC}          Close current pane"
             echo ""
@@ -272,7 +277,7 @@ dev() {
             echo -e "  ${BLUE}q${NC}                 Exit copy mode"
             echo ""
             echo -e "${YELLOW}Session management:${NC}"
-            echo -e "  ${BLUE}Prefix \$${NC}          Rename session"
+            echo -e "  ${BLUE}Prefix \$${NC}         Rename session"
             echo -e "  ${BLUE}Prefix s${NC}          Show all sessions"
             echo -e "  ${BLUE}Prefix (${NC}          Switch to previous session"
             echo -e "  ${BLUE}Prefix )${NC}          Switch to next session"
@@ -306,8 +311,9 @@ dev() {
 
             # Check if session already exists
             if tmux has-session -t "$session_name" 2>/dev/null; then
-                echo -e "${YELLOW}Session '${display_name}' already exists${NC}"
-                read -p "$(echo -e ${GREEN}"Attach to it? (y/n) "${NC})" choice
+                echo -e "${YELLOW}⚠ Session '${display_name}' already exists!${NC}"
+                echo -ne "${GREEN}Attach to it? (y/n) ${NC}"
+                read choice
                 case "$choice" in
                     y|Y)
                         echo -e "${BLUE}Attaching to: ${display_name}${NC}"
