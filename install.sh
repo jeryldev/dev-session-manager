@@ -1,6 +1,5 @@
 #!/bin/bash
-
-# Dev Session Manager Installer
+# Dev session manager installer
 # https://github.com/jeryldev/dev-session-manager
 
 set -e
@@ -12,21 +11,23 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${GREEN}Dev Session Manager Installer${NC}"
+echo -e "${GREEN}Dev session manager installer${NC}"
 echo ""
-
-# Check for tmux
-if ! command -v tmux &> /dev/null; then
-    echo -e "${YELLOW}Warning: tmux is not installed${NC}"
-    echo -e "Install with: ${BLUE}brew install tmux${NC} (macOS)"
-    echo -e "           or ${BLUE}apt install tmux${NC} (Ubuntu/Debian)"
-    echo ""
-fi
 
 # Check for zsh
 if [[ ! "$SHELL" == *"zsh"* ]] && [[ ! -f ~/.zshrc ]]; then
     echo -e "${RED}Error: This tool requires zsh${NC}"
+    echo -e "${YELLOW}Install zsh and set it as your default shell first${NC}"
     exit 1
+fi
+
+# Check for tmux
+if ! command -v tmux &> /dev/null; then
+    echo -e "${YELLOW}Warning: tmux is not installed${NC}"
+    echo -e "  Install with: ${BLUE}brew install tmux${NC} (macOS)"
+    echo -e "             or ${BLUE}apt install tmux${NC} (Ubuntu/Debian)"
+    echo -e "             or ${BLUE}dnf install tmux${NC} (Fedora)"
+    echo ""
 fi
 
 # Create config directory
@@ -53,7 +54,7 @@ SOURCE_LINE='[[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh'
 
 if ! grep -q "dev.zsh" "$ZSHRC" 2>/dev/null; then
     echo "" >> "$ZSHRC"
-    echo "# Dev Session Manager" >> "$ZSHRC"
+    echo "# Dev session manager" >> "$ZSHRC"
     echo "$SOURCE_LINE" >> "$ZSHRC"
     echo -e "${GREEN}✓${NC} Added source line to ~/.zshrc"
 else
