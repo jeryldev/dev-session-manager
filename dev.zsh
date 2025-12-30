@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="1.0.1"
+DEV_VERSION="1.0.2"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"
@@ -347,3 +347,8 @@ dev() {
             ;;
     esac
 }
+
+# Run directly if executed (not sourced)
+if [[ "${zsh_eval_context[-1]}" != "file" ]]; then
+    dev "$@"
+fi
