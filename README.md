@@ -28,10 +28,18 @@ sudo dnf install tmux
 
 ## Installation
 
+### Homebrew (recommended)
+
+```bash
+brew tap jeryldev/tap
+brew install dev-session-manager
+```
+
 ### Quick install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jeryldev/dev-session-manager/main/install.sh | bash
+source ~/.zshrc
 ```
 
 ### Manual install
@@ -40,11 +48,6 @@ curl -fsSL https://raw.githubusercontent.com/jeryldev/dev-session-manager/main/i
 git clone https://github.com/jeryldev/dev-session-manager.git
 cd dev-session-manager
 ./install.sh
-```
-
-After installation, restart your terminal or run:
-
-```bash
 source ~/.zshrc
 ```
 
@@ -138,6 +141,15 @@ export DEV_HOME_DIR="$HOME/projects"
 ```
 
 ## Uninstall
+
+### Homebrew
+
+```bash
+brew uninstall dev-session-manager
+brew untap jeryldev/tap
+```
+
+### Manual
 
 ```bash
 rm ~/.config/zsh/dev.zsh
