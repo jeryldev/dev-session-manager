@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="1.0.2"
+DEV_VERSION="2.0.0"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"
@@ -47,6 +47,7 @@ _dev_show_prerequisites() {
         echo -e "  ${RED}✗${NC} tmux (not installed)"
         echo -e "      ${YELLOW}Install: brew install tmux${NC}"
     fi
+
     echo ""
 }
 

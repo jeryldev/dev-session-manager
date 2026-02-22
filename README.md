@@ -129,6 +129,55 @@ When you create a session with `dev <name>`, it creates 7 windows:
 
 All windows start in your `$DEV_HOME_DIR` (defaults to `~/code`).
 
+## AI coding popup (v2.0)
+
+Open a persistent AI coding assistant in a tmux popup. The session stays alive when the popup is closed, so you can resume your conversation anytime.
+
+### Setup
+
+Add to your `.tmux.conf`:
+
+```bash
+# AI coding popup (dev-session-manager)
+# Runs in a persistent detached session. Popup attaches to it.
+# Close with prefix+d (detach). Reopen with prefix+a (session stays alive).
+bind a run-shell '\
+  SESSION="ai-$(echo #{pane_current_path} | md5 -q | cut -c1-8)"; \
+  tmux has-session -t "$SESSION" 2>/dev/null || \
+  tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "claude"; \
+  tmux display-popup -w 80% -h 80% -b single -E \
+  "tmux attach-session -t $SESSION"'
+```
+
+Then reload tmux config (`prefix + r` or `tmux source-file ~/.tmux.conf`).
+
+### Usage
+
+- **Open**: `prefix + a` opens an 80% x 80% popup with your AI assistant
+- **Close**: `prefix + d` (detach) closes the popup, session stays alive
+- **Reopen**: `prefix + a` resumes exactly where you left off
+
+Each directory gets its own persistent session (named by directory hash).
+
+### Customization
+
+The keybinding uses `claude` by default. To use a different AI coding tool, replace `"claude"` in the keybinding with your preferred command:
+
+| Tool | Command |
+|------|---------|
+| [Claude Code](https://github.com/anthropics/claude-code) | `"claude"` |
+| [OpenAI Codex](https://github.com/openai/codex) | `"codex"` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `"gemini"` |
+| [Aider](https://github.com/paul-gauthier/aider) | `"aider"` |
+
+You can also customize the popup appearance:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-w` | `80%` | Popup width |
+| `-h` | `80%` | Popup height |
+| `-b` | `single` | Border style (`single`, `double`, `rounded`, `padded`, `none`) |
+
 ## Configuration
 
 Set `DEV_HOME_DIR` in your `.zshrc` before the source line to change the default directory:
