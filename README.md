@@ -129,9 +129,9 @@ When you create a session with `dev <name>`, it creates 7 windows:
 
 All windows start in your `$DEV_HOME_DIR` (defaults to `~/code`).
 
-## AI coding popup (v2.0)
+## AI coding popup (v2.1)
 
-Open a persistent AI coding assistant in a tmux popup. The session stays alive when the popup is closed, so you can resume your conversation anytime.
+Open a persistent AI coding assistant in a tmux popup. Each tmux window gets its own session, so you can have separate conversations for frontend, testing, editing, etc.
 
 ### Setup
 
@@ -139,10 +139,10 @@ Add to your `.tmux.conf`:
 
 ```bash
 # AI coding popup (dev-session-manager)
-# Runs in a persistent detached session. Popup attaches to it.
+# Each tmux window gets its own persistent AI session.
 # Close with prefix+d (detach). Reopen with prefix+a (session stays alive).
 bind a run-shell '\
-  SESSION="ai-$(echo #{pane_current_path} | md5 -q | cut -c1-8)"; \
+  SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; \
   tmux has-session -t "$SESSION" 2>/dev/null || \
   tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "claude"; \
   tmux display-popup -w 80% -h 80% -b single -E \
@@ -157,18 +157,31 @@ Then reload tmux config (`prefix + r` or `tmux source-file ~/.tmux.conf`).
 - **Close**: `prefix + d` (detach) closes the popup, session stays alive
 - **Reopen**: `prefix + a` resumes exactly where you left off
 
-Each directory gets its own persistent session (named by directory hash).
+Each tmux window gets its own persistent session. The session name is derived from your tmux session, window number, window name, and AI tool:
+
+| Window | Session name |
+|--------|-------------|
+| `dev-myproject` window 5 (editor) | `ai-dev-myproject-5-editor-claude` |
+| `dev-myproject` window 4 (testing) | `ai-dev-myproject-4-testing-claude` |
+| `dev-other` window 5 (editor) | `ai-dev-other-5-editor-claude` |
+
+### Behavior
+
+- **Detach** (`prefix + d`): closes the popup. The AI session stays alive in the background. Pressing `prefix + a` again resumes exactly where you left off.
+- **Exit** (type `/exit` in the AI tool): terminates the AI process. Since the AI tool is the only process in the session, the session is destroyed. The next `prefix + a` starts a fresh session.
+
+Changing directories with `cd` does not affect which session you get. The session is tied to the tmux window, not the filesystem path.
 
 ### Customization
 
-The keybinding uses `claude` by default. To use a different AI coding tool, replace `"claude"` in the keybinding with your preferred command:
+The keybinding uses `claude` by default. To use a different AI coding tool, replace both occurrences of `claude` in the keybinding (the session name suffix and the command):
 
-| Tool | Command |
-|------|---------|
-| [Claude Code](https://github.com/anthropics/claude-code) | `"claude"` |
-| [OpenAI Codex](https://github.com/openai/codex) | `"codex"` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `"gemini"` |
-| [Aider](https://github.com/paul-gauthier/aider) | `"aider"` |
+| Tool | Command | Session suffix |
+|------|---------|----------------|
+| [Claude Code](https://github.com/anthropics/claude-code) | `"claude"` | `-claude` |
+| [OpenAI Codex](https://github.com/openai/codex) | `"codex"` | `-codex` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `"gemini"` | `-gemini` |
+| [Aider](https://github.com/paul-gauthier/aider) | `"aider"` | `-aider` |
 
 You can also customize the popup appearance:
 
