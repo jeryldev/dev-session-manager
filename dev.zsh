@@ -344,12 +344,9 @@ dev() {
 # AI popup keybinding: prefix+a opens a persistent AI session per tmux window
 _dev_setup_ai_keybinding() {
     [[ -z "$TMUX" ]] && return
-    tmux bind-key a run-shell "\
-      SESSION=\"ai-#{session_name}-#{window_index}-#{window_name}-${DEV_AI_CMD}\"; \
-      tmux has-session -t \"\$SESSION\" 2>/dev/null || \
-      tmux new-session -d -s \"\$SESSION\" -c \"#{pane_current_path}\" \"${DEV_AI_CMD}\"; \
-      tmux display-popup -w 80% -h 80% -b single -E \
-      \"tmux attach-session -t \$SESSION\""
+    local cmd="${DEV_AI_CMD}"
+    tmux bind-key a run-shell \
+      'SESSION="ai-#{session_name}-#{window_index}-#{window_name}-'"${cmd}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 80% -h 80% -b single -E "tmux attach-session -t $SESSION"'
 }
 
 # Run directly if executed (not sourced), set up keybinding if sourced
