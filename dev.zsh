@@ -13,7 +13,6 @@ DEV_VERSION="2.1.0"
 # Configuration
 DEV_SESSION_PREFIX="dev-"
 DEV_DEFAULT_DIR="${DEV_HOME_DIR:-$HOME/code}"
-DEV_CONFIG_FILE="${HOME}/.config/zsh/dev.zsh"
 DEV_AI_CMD="${DEV_AI_CMD:-claude}"
 
 # Colors (use existing shell colors or define defaults)
@@ -107,6 +106,7 @@ _dev_center_text() {
 # Dev session manager
 # Usage: dev <command> [args]
 dev() {
+    _dev_setup_ai_keybinding
     local cmd="$1"
     local box_width=56
 
@@ -126,7 +126,7 @@ dev() {
             echo -e "  ${BLUE}dev attach <name>${NC}  Attach to an existing dev session"
             echo -e "  ${BLUE}dev ls${NC}             List all dev sessions"
             echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session"
-            echo -e "  ${BLUE}dev reload${NC}         Reload dev.zsh configuration"
+            echo -e "  ${BLUE}dev reload${NC}         Reload AI popup keybinding"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
             echo -e "  ${BLUE}dev version${NC}        Show version"
@@ -223,18 +223,9 @@ dev() {
             ;;
 
         reload)
-            echo -e "${BLUE}Reloading dev.zsh configuration...${NC}"
-            if [[ ! -f "$DEV_CONFIG_FILE" ]]; then
-                echo -e "${RED}✗ Config file not found: $DEV_CONFIG_FILE${NC}"
-                return 1
-            fi
-            if source "$DEV_CONFIG_FILE" 2>/dev/null; then
-                echo -e "${GREEN}✓ Successfully reloaded dev.zsh${NC}"
-            else
-                echo -e "${RED}✗ Failed to reload dev.zsh${NC}"
-                echo -e "${YELLOW}Check $DEV_CONFIG_FILE for syntax errors${NC}"
-                return 1
-            fi
+            echo -e "${BLUE}Reloading dev configuration...${NC}"
+            _dev_setup_ai_keybinding
+            echo -e "${GREEN}✓ AI popup keybinding updated${NC}"
             ;;
 
         tmux|t)
@@ -351,16 +342,19 @@ dev() {
 }
 
 # AI popup keybinding: prefix+a opens a persistent AI session per tmux window
-if [[ -n "$TMUX" ]]; then
+_dev_setup_ai_keybinding() {
+    [[ -z "$TMUX" ]] && return
     tmux bind-key a run-shell "\
       SESSION=\"ai-#{session_name}-#{window_index}-#{window_name}-${DEV_AI_CMD}\"; \
       tmux has-session -t \"\$SESSION\" 2>/dev/null || \
       tmux new-session -d -s \"\$SESSION\" -c \"#{pane_current_path}\" \"${DEV_AI_CMD}\"; \
       tmux display-popup -w 80% -h 80% -b single -E \
       \"tmux attach-session -t \$SESSION\""
-fi
+}
 
-# Run directly if executed (not sourced)
+# Run directly if executed (not sourced), set up keybinding if sourced
 if [[ "${zsh_eval_context[-1]}" != "file" ]]; then
     dev "$@"
+else
+    _dev_setup_ai_keybinding
 fi
