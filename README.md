@@ -135,21 +135,9 @@ Open a persistent AI coding assistant in a tmux popup. Each tmux window gets its
 
 ### Setup
 
-Add to your `.tmux.conf`:
+No extra configuration needed. The `prefix + a` keybinding is set up automatically when `dev.zsh` is sourced inside a tmux session.
 
-```bash
-# AI coding popup (dev-session-manager)
-# Each tmux window gets its own persistent AI session.
-# Close with prefix+d (detach). Reopen with prefix+a (session stays alive).
-bind a run-shell '\
-  SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; \
-  tmux has-session -t "$SESSION" 2>/dev/null || \
-  tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "claude"; \
-  tmux display-popup -w 80% -h 80% -b single -E \
-  "tmux attach-session -t $SESSION"'
-```
-
-Then reload tmux config (`prefix + r` or `tmux source-file ~/.tmux.conf`).
+If you previously added the AI popup keybinding to your `.tmux.conf` (v2.0), you can safely remove it. The keybinding is now managed by `dev.zsh`.
 
 ### Usage
 
@@ -174,29 +162,36 @@ Changing directories with `cd` does not affect which session you get. The sessio
 
 ### Customization
 
-The keybinding uses `claude` by default. To use a different AI coding tool, replace both occurrences of `claude` in the keybinding (the session name suffix and the command):
+The keybinding uses `claude` by default. Set `DEV_AI_CMD` in your `.zshrc` before the source line to use a different AI tool:
 
-| Tool | Command | Session suffix |
-|------|---------|----------------|
-| [Claude Code](https://github.com/anthropics/claude-code) | `"claude"` | `-claude` |
-| [OpenAI Codex](https://github.com/openai/codex) | `"codex"` | `-codex` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `"gemini"` | `-gemini` |
-| [Aider](https://github.com/paul-gauthier/aider) | `"aider"` | `-aider` |
+```bash
+export DEV_AI_CMD="aider"
 
-You can also customize the popup appearance:
+# Dev session manager
+[[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh
+```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-w` | `80%` | Popup width |
-| `-h` | `80%` | Popup height |
-| `-b` | `single` | Border style (`single`, `double`, `rounded`, `padded`, `none`) |
+Supported tools:
+
+| Tool | DEV_AI_CMD |
+|------|------------|
+| [Claude Code](https://github.com/anthropics/claude-code) | `claude` (default) |
+| [OpenAI Codex](https://github.com/openai/codex) | `codex` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` |
+| [Aider](https://github.com/paul-gauthier/aider) | `aider` |
 
 ## Configuration
 
-Set `DEV_HOME_DIR` in your `.zshrc` before the source line to change the default directory:
+Set these variables in your `.zshrc` before the source line:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEV_HOME_DIR` | `~/code` | Base directory for new session windows |
+| `DEV_AI_CMD` | `claude` | AI coding tool for the popup (`prefix + a`) |
 
 ```bash
 export DEV_HOME_DIR="$HOME/projects"
+export DEV_AI_CMD="claude"
 
 # Dev session manager
 [[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh

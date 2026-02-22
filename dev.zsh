@@ -8,12 +8,13 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="2.0.0"
+DEV_VERSION="2.1.0"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"
 DEV_DEFAULT_DIR="${DEV_HOME_DIR:-$HOME/code}"
 DEV_CONFIG_FILE="${HOME}/.config/zsh/dev.zsh"
+DEV_AI_CMD="${DEV_AI_CMD:-claude}"
 
 # Colors (use existing shell colors or define defaults)
 : ${RED:='\033[0;31m'}
@@ -348,6 +349,16 @@ dev() {
             ;;
     esac
 }
+
+# AI popup keybinding: prefix+a opens a persistent AI session per tmux window
+if [[ -n "$TMUX" ]]; then
+    tmux bind-key a run-shell "\
+      SESSION=\"ai-#{session_name}-#{window_index}-#{window_name}-${DEV_AI_CMD}\"; \
+      tmux has-session -t \"\$SESSION\" 2>/dev/null || \
+      tmux new-session -d -s \"\$SESSION\" -c \"#{pane_current_path}\" \"${DEV_AI_CMD}\"; \
+      tmux display-popup -w 80% -h 80% -b single -E \
+      \"tmux attach-session -t \$SESSION\""
+fi
 
 # Run directly if executed (not sourced)
 if [[ "${zsh_eval_context[-1]}" != "file" ]]; then
