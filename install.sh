@@ -30,6 +30,63 @@ if ! command -v tmux &>/dev/null; then
   echo ""
 fi
 
+# Optional tool installation prompts
+if command -v brew &>/dev/null; then
+  echo -e "${YELLOW}Optional tools for popup features:${NC}"
+  echo ""
+
+  # Claude Code (AI popup)
+  if command -v claude &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} claude (AI popup: Prefix a)"
+  else
+    echo -ne "  ${YELLOW}Install claude-code for AI popup? (y/n) ${NC}"
+    read -r choice
+    if [[ "$choice" == [yY] ]]; then
+      echo -e "  ${BLUE}Installing claude-code...${NC}"
+      brew install claude-code || echo -e "  ${RED}✗${NC} Installation failed. Install manually: ${BLUE}brew install claude-code${NC}"
+    else
+      echo -e "  ${YELLOW}→${NC} Skipped. Install later: ${BLUE}brew install claude-code${NC}"
+    fi
+  fi
+
+  # kb (Kanban popup)
+  if command -v kb &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} kb (Kanban popup: Prefix k)"
+  else
+    echo -ne "  ${YELLOW}Install kb for Kanban popup? (y/n) ${NC}"
+    read -r choice
+    if [[ "$choice" == [yY] ]]; then
+      echo -e "  ${BLUE}Installing kb...${NC}"
+      brew install jeryldev/tap/kb || echo -e "  ${RED}✗${NC} Installation failed. Install manually: ${BLUE}brew install jeryldev/tap/kb${NC}"
+    else
+      echo -e "  ${YELLOW}→${NC} Skipped. Install later: ${BLUE}brew install jeryldev/tap/kb${NC}"
+    fi
+  fi
+
+  # lazygit (Git popup)
+  if command -v lazygit &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} lazygit (Git popup: Prefix g)"
+  else
+    echo -ne "  ${YELLOW}Install lazygit for Git popup? (y/n) ${NC}"
+    read -r choice
+    if [[ "$choice" == [yY] ]]; then
+      echo -e "  ${BLUE}Installing lazygit...${NC}"
+      brew install lazygit || echo -e "  ${RED}✗${NC} Installation failed. Install manually: ${BLUE}brew install lazygit${NC}"
+    else
+      echo -e "  ${YELLOW}→${NC} Skipped. Install later: ${BLUE}brew install lazygit${NC}"
+    fi
+  fi
+
+  echo ""
+else
+  echo ""
+  echo -e "${YELLOW}Optional popup tools (install manually):${NC}"
+  echo -e "  ${BLUE}brew install claude-code${NC}       AI popup (Prefix a)"
+  echo -e "  ${BLUE}brew install jeryldev/tap/kb${NC}   Kanban popup (Prefix k)"
+  echo -e "  ${BLUE}brew install lazygit${NC}           Git popup (Prefix g)"
+  echo ""
+fi
+
 # Create config directory
 CONFIG_DIR="${HOME}/.config/zsh"
 mkdir -p "$CONFIG_DIR"

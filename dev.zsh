@@ -365,34 +365,19 @@ dev() {
     esac
 }
 
+# Bind a key to open a persistent popup session per tmux window
+# Usage: _dev_bind_popup <key> <session_prefix> <command> [session_suffix]
+_dev_bind_popup() {
+    local key="$1" prefix="$2" cmd="$3" suffix="${4:+-$4}"
+    tmux bind-key "$key" run-shell \
+      'SESSION="'"${prefix}"'-#{session_name}-#{window_index}-#{window_name}'"${suffix}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
+}
+
 _dev_setup_popup_keybindings() {
-    _dev_setup_ai_keybinding
-    _dev_setup_kb_keybinding
-    _dev_setup_lazygit_keybinding
-}
-
-# AI popup keybinding: prefix+a opens a persistent AI session per tmux window
-_dev_setup_ai_keybinding() {
     [[ -z "$TMUX" ]] && return
-    local cmd="${DEV_AI_CMD}"
-    tmux bind-key a run-shell \
-      'SESSION="ai-#{session_name}-#{window_index}-#{window_name}-'"${cmd}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
-}
-
-# Kanban popup keybinding: prefix+k opens kb in a persistent tmux popup
-_dev_setup_kb_keybinding() {
-    [[ -z "$TMUX" ]] && return
-    _dev_has_command kb || return
-    tmux bind-key k run-shell \
-      'SESSION="kb-#{session_name}-#{window_index}-#{window_name}"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "kb"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
-}
-
-# Lazygit popup keybinding: prefix+g opens lazygit in a persistent tmux popup
-_dev_setup_lazygit_keybinding() {
-    [[ -z "$TMUX" ]] && return
-    _dev_has_command lazygit || return
-    tmux bind-key g run-shell \
-      'SESSION="lg-#{session_name}-#{window_index}-#{window_name}"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "lazygit"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
+    _dev_bind_popup a ai "${DEV_AI_CMD}" "${DEV_AI_CMD}"
+    _dev_has_command kb && _dev_bind_popup k kb kb
+    _dev_has_command lazygit && _dev_bind_popup g lg lazygit
 }
 
 # Run directly if executed (not sourced), set up keybindings if sourced

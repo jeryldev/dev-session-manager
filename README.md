@@ -26,6 +26,16 @@ sudo apt install tmux
 sudo dnf install tmux
 ```
 
+### Optional tools (for popup features)
+
+| Tool | Popup keybinding | Install |
+|------|-----------------|---------|
+| [Claude Code](https://github.com/anthropics/claude-code) | `prefix + a` | `brew install claude-code` |
+| [kb](https://github.com/jeryldev/kb) | `prefix + k` | `brew install jeryldev/tap/kb` |
+| [lazygit](https://github.com/jesseduffield/lazygit) | `prefix + g` | `brew install lazygit` |
+
+These are detected automatically. Run `dev help` to see which are installed.
+
 ## Installation
 
 ### Homebrew (recommended)
@@ -129,40 +139,55 @@ When you create a session with `dev <name>`, it creates 7 windows:
 
 All windows start in your `$DEV_HOME_DIR` (defaults to `~/code`).
 
-## AI coding popup (v2.1)
+## Popup windows (v2.1)
 
-Open a persistent AI coding assistant in a tmux popup. Each tmux window gets its own session, so you can have separate conversations for frontend, testing, editing, etc.
+Persistent popup windows for AI coding, kanban boards, and git management. Each tmux window gets its own popup session, so you can have separate contexts per window.
+
+### Keybindings
+
+| Keybinding | Popup | Tool |
+|------------|-------|------|
+| `prefix + a` | AI coding assistant | claude (configurable) |
+| `prefix + k` | Kanban board | kb |
+| `prefix + g` | Git UI | lazygit |
+
+All popups open at 90% x 90% with a single border.
 
 ### Setup
 
-No extra configuration needed. The `prefix + a` keybinding is set up automatically when `dev.zsh` is sourced inside a tmux session.
+No extra configuration needed. Keybindings are set up automatically when `dev.zsh` is sourced inside a tmux session. Optional tools (kb, lazygit) are only bound if installed.
 
 If you previously added the AI popup keybinding to your `.tmux.conf` (v2.0), you can safely remove it. The keybinding is now managed by `dev.zsh`.
 
+Use `dev reload` to refresh keybindings after installing a new tool.
+
 ### Usage
 
-- **Open**: `prefix + a` opens an 80% x 80% popup with your AI assistant
+- **Open**: `prefix + a/k/g` opens the popup
 - **Close**: `prefix + d` (detach) closes the popup, session stays alive
-- **Reopen**: `prefix + a` resumes exactly where you left off
+- **Reopen**: same keybinding resumes exactly where you left off
 
-Each tmux window gets its own persistent session. The session name is derived from your tmux session, window number, window name, and AI tool:
+### Session identity
 
-| Window | Session name |
-|--------|-------------|
-| `dev-myproject` window 5 (editor) | `ai-dev-myproject-5-editor-claude` |
-| `dev-myproject` window 4 (testing) | `ai-dev-myproject-4-testing-claude` |
-| `dev-other` window 5 (editor) | `ai-dev-other-5-editor-claude` |
+Each tmux window gets its own persistent session. The session name is derived from your tmux session, window number, and window name:
+
+| Popup | Window | Session name |
+|-------|--------|-------------|
+| AI | `dev-myproject` window 5 (editor) | `ai-dev-myproject-5-editor-claude` |
+| AI | `dev-myproject` window 4 (testing) | `ai-dev-myproject-4-testing-claude` |
+| Kanban | `dev-myproject` window 5 (editor) | `kb-dev-myproject-5-editor` |
+| Git | `dev-myproject` window 5 (editor) | `lg-dev-myproject-5-editor` |
 
 ### Behavior
 
-- **Detach** (`prefix + d`): closes the popup. The AI session stays alive in the background. Pressing `prefix + a` again resumes exactly where you left off.
-- **Exit** (type `/exit` in the AI tool): terminates the AI process. Since the AI tool is the only process in the session, the session is destroyed. The next `prefix + a` starts a fresh session.
+- **Detach** (`prefix + d`): closes the popup. The session stays alive in the background. Pressing the keybinding again resumes exactly where you left off.
+- **Exit** (type `/exit` or `exit`): terminates the process. Since the tool is the only process in the session, the session is destroyed. The next keybinding press starts a fresh session.
 
 Changing directories with `cd` does not affect which session you get. The session is tied to the tmux window, not the filesystem path.
 
-### Customization
+### AI tool customization
 
-The keybinding uses `claude` by default. Set `DEV_AI_CMD` in your `.zshrc` before the source line to use a different AI tool:
+The AI popup uses `claude` by default. Set `DEV_AI_CMD` in your `.zshrc` before the source line to use a different tool:
 
 ```bash
 export DEV_AI_CMD="aider"
