@@ -27,6 +27,15 @@ _dev_has_command() {
     command -v "$1" &> /dev/null
 }
 
+_dev_check_optional() {
+    local cmd="$1" label="$2" install="$3"
+    if _dev_has_command "$cmd"; then
+        echo -e "  ${GREEN}✓${NC} $cmd ($label)"
+    else
+        echo -e "  ${RED}✗${NC} $cmd ($install)"
+    fi
+}
+
 # Show prerequisite status with checkmarks
 _dev_show_prerequisites() {
     echo ""
@@ -47,6 +56,12 @@ _dev_show_prerequisites() {
         echo -e "  ${RED}✗${NC} tmux (not installed)"
         echo -e "      ${YELLOW}Install: brew install tmux${NC}"
     fi
+
+    echo ""
+    echo -e "${YELLOW}Optional tools:${NC}"
+    _dev_check_optional claude  "AI popup: Prefix a"    "brew install claude-code"
+    _dev_check_optional kb      "Kanban popup: Prefix k" "brew install jeryldev/tap/kb"
+    _dev_check_optional lazygit "Git popup: Prefix g"   "brew install lazygit"
 
     echo ""
 }
@@ -106,7 +121,6 @@ _dev_center_text() {
 # Dev session manager
 # Usage: dev <command> [args]
 dev() {
-    _dev_setup_ai_keybinding
     local cmd="$1"
     local box_width=56
 
@@ -126,7 +140,7 @@ dev() {
             echo -e "  ${BLUE}dev attach <name>${NC}  Attach to an existing dev session"
             echo -e "  ${BLUE}dev ls${NC}             List all dev sessions"
             echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session"
-            echo -e "  ${BLUE}dev reload${NC}         Reload AI popup keybinding"
+            echo -e "  ${BLUE}dev reload${NC}         Reload popup keybindings"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
             echo -e "  ${BLUE}dev version${NC}        Show version"
@@ -142,6 +156,11 @@ dev() {
             echo -e "  5. ${GREEN}editor${NC}     6. scratch    7. extra"
             echo ""
             echo -e "${BLUE}Starts at window 5 (editor)${NC}"
+            echo ""
+            echo -e "${YELLOW}Popup keybindings (inside tmux):${NC}"
+            echo -e "  ${BLUE}Prefix a${NC}          AI assistant (claude)"
+            echo -e "  ${BLUE}Prefix k${NC}          Kanban board (kb)"
+            echo -e "  ${BLUE}Prefix g${NC}          Git UI (lazygit)"
             echo ""
             ;;
 
@@ -224,8 +243,8 @@ dev() {
 
         reload)
             echo -e "${BLUE}Reloading dev configuration...${NC}"
-            _dev_setup_ai_keybinding
-            echo -e "${GREEN}✓ AI popup keybinding updated${NC}"
+            _dev_setup_popup_keybindings
+            echo -e "${GREEN}✓ Popup keybindings updated${NC}"
             ;;
 
         tmux|t)
@@ -274,6 +293,11 @@ dev() {
             echo -e "  ${BLUE}Prefix s${NC}          Show all sessions"
             echo -e "  ${BLUE}Prefix (${NC}          Switch to previous session"
             echo -e "  ${BLUE}Prefix )${NC}          Switch to next session"
+            echo ""
+            echo -e "${YELLOW}Dev popups:${NC}"
+            echo -e "  ${BLUE}Prefix a${NC}          AI assistant popup"
+            echo -e "  ${BLUE}Prefix k${NC}          Kanban board popup"
+            echo -e "  ${BLUE}Prefix g${NC}          Git UI popup"
             echo ""
             echo -e "${GREEN}Quick reference:${NC}"
             echo -e "  ${BLUE}Detach${NC} = Prefix d (session stays alive, can reattach)"
@@ -341,17 +365,39 @@ dev() {
     esac
 }
 
+_dev_setup_popup_keybindings() {
+    _dev_setup_ai_keybinding
+    _dev_setup_kb_keybinding
+    _dev_setup_lazygit_keybinding
+}
+
 # AI popup keybinding: prefix+a opens a persistent AI session per tmux window
 _dev_setup_ai_keybinding() {
     [[ -z "$TMUX" ]] && return
     local cmd="${DEV_AI_CMD}"
     tmux bind-key a run-shell \
-      'SESSION="ai-#{session_name}-#{window_index}-#{window_name}-'"${cmd}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 80% -h 80% -b single -E "tmux attach-session -t $SESSION"'
+      'SESSION="ai-#{session_name}-#{window_index}-#{window_name}-'"${cmd}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
 }
 
-# Run directly if executed (not sourced), set up keybinding if sourced
+# Kanban popup keybinding: prefix+k opens kb in a persistent tmux popup
+_dev_setup_kb_keybinding() {
+    [[ -z "$TMUX" ]] && return
+    _dev_has_command kb || return
+    tmux bind-key k run-shell \
+      'SESSION="kb-#{session_name}-#{window_index}-#{window_name}"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "kb"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
+}
+
+# Lazygit popup keybinding: prefix+g opens lazygit in a persistent tmux popup
+_dev_setup_lazygit_keybinding() {
+    [[ -z "$TMUX" ]] && return
+    _dev_has_command lazygit || return
+    tmux bind-key g run-shell \
+      'SESSION="lg-#{session_name}-#{window_index}-#{window_name}"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "lazygit"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
+}
+
+# Run directly if executed (not sourced), set up keybindings if sourced
 if [[ "${zsh_eval_context[-1]}" != "file" ]]; then
     dev "$@"
 else
-    _dev_setup_ai_keybinding
+    _dev_setup_popup_keybindings
 fi
