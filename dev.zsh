@@ -107,6 +107,19 @@ _dev_check_tmux() {
 }
 
 
+_dev_session_not_found() {
+    local display_name="$1"
+    echo -e "${RED}✗ Session '${display_name}' not found${NC}"
+    echo -e "${YELLOW}Tip: Run 'dev ls' to see active sessions${NC}"
+}
+
+_dev_attach_session() {
+    local session_name="$1" message="$2"
+    _dev_setup_popup_keybindings
+    echo -e "${BLUE}${message}${NC}"
+    tmux attach -t "$session_name"
+}
+
 # Center text in a box
 _dev_center_text() {
     local text="$1"
@@ -206,11 +219,9 @@ dev() {
             local display_name=$(_dev_display_name "$session_name")
 
             if tmux has-session -t "$session_name" 2>/dev/null; then
-                echo -e "${BLUE}Attaching to: ${display_name}${NC}"
-                tmux attach -t "$session_name"
+                _dev_attach_session "$session_name" "Attaching to: ${display_name}"
             else
-                echo -e "${RED}✗ Session '${display_name}' not found${NC}"
-                echo -e "${YELLOW}Tip: Run 'dev ls' to see active sessions${NC}"
+                _dev_session_not_found "$display_name"
             fi
             ;;
 
@@ -234,14 +245,17 @@ dev() {
 
             if tmux has-session -t "$session_name" 2>/dev/null; then
                 tmux kill-session -t "$session_name"
-                echo -e "${GREEN}✓ Killed session: $display_name${NC}"
+                echo -e "${GREEN}✓ Killed session: ${display_name}${NC}"
             else
-                echo -e "${RED}✗ Session '$display_name' not found${NC}"
-                echo -e "${YELLOW}Tip: Run 'dev ls' to see active sessions${NC}"
+                _dev_session_not_found "$display_name"
             fi
             ;;
 
         reload)
+            if ! tmux list-sessions &>/dev/null; then
+                echo -e "${YELLOW}No active tmux server. Start a session first.${NC}"
+                return 1
+            fi
             echo -e "${BLUE}Reloading dev configuration...${NC}"
             _dev_setup_popup_keybindings
             echo -e "${GREEN}✓ Popup keybindings updated${NC}"
@@ -333,8 +347,7 @@ dev() {
                 read choice
                 case "$choice" in
                     y|Y)
-                        echo -e "${BLUE}Attaching to: ${display_name}${NC}"
-                        tmux attach -t "$session_name"
+                        _dev_attach_session "$session_name" "Attaching to: ${display_name}"
                         ;;
                     *)
                         echo -e "${RED}Operation cancelled${NC}"
@@ -358,9 +371,7 @@ dev() {
             # Select the editor window (window 5)
             tmux select-window -t "$session_name:5"
 
-            # Attach to the session
-            echo -e "${BLUE}Created 7 windows, starting at editor${NC}"
-            tmux attach -t "$session_name"
+            _dev_attach_session "$session_name" "Created 7 windows, starting at editor"
             ;;
     esac
 }
@@ -374,7 +385,7 @@ _dev_bind_popup() {
 }
 
 _dev_setup_popup_keybindings() {
-    [[ -z "$TMUX" ]] && return
+    tmux list-sessions &>/dev/null || return 0
     _dev_bind_popup a ai "${DEV_AI_CMD}" "${DEV_AI_CMD}"
     _dev_has_command kb && _dev_bind_popup k kb kb
     _dev_has_command lazygit && _dev_bind_popup g lg lazygit

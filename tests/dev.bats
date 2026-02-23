@@ -292,11 +292,22 @@ run_dev() {
     [[ "$output" == *"not found"* ]]
 }
 
-# ─── dev reload (outside tmux) ───
+# ─── dev reload ───
 
-@test "dev reload outside tmux succeeds gracefully" {
-    # When not in tmux, _dev_setup_popup_keybindings returns early
-    run zsh -c "unset TMUX; source '$DEV_ZSH' 2>/dev/null; dev reload"
+@test "dev reload without tmux server shows warning" {
+    if tmux list-sessions &>/dev/null; then
+        skip "tmux server is running"
+    fi
+    run_dev reload
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"No active tmux server"* ]]
+}
+
+@test "dev reload with tmux server updates keybindings" {
+    if ! tmux list-sessions &>/dev/null; then
+        skip "no tmux server running"
+    fi
+    run_dev reload
     [ "$status" -eq 0 ]
     [[ "$output" == *"Reloading"* ]]
     [[ "$output" == *"updated"* ]]
@@ -343,14 +354,32 @@ run_dev() {
 
 # ─── Popup keybinding guards ───
 
-@test "_dev_setup_popup_keybindings does nothing outside tmux" {
-    run zsh -c "unset TMUX; source '$DEV_ZSH' 2>/dev/null; _dev_setup_popup_keybindings"
+@test "_dev_setup_popup_keybindings succeeds without tmux server" {
+    # Guard returns early if no tmux server is running; binds keys if one is
+    run zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_setup_popup_keybindings"
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
 }
 
 @test "_dev_bind_popup is defined after sourcing" {
     run zsh -c "source '$DEV_ZSH' 2>/dev/null; type _dev_bind_popup"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"function"* ]]
+}
+
+# ─── _dev_session_not_found ───
+
+@test "_dev_session_not_found shows error and tip" {
+    run_zsh_func '_dev_session_not_found myproject'
+    local clean=$(echo "$output" | strip_colors)
+    [[ "$clean" == *"✗"* ]]
+    [[ "$clean" == *"myproject"* ]]
+    [[ "$clean" == *"dev ls"* ]]
+}
+
+# ─── _dev_attach_session ───
+
+@test "_dev_attach_session is defined after sourcing" {
+    run zsh -c "source '$DEV_ZSH' 2>/dev/null; type _dev_attach_session"
     [ "$status" -eq 0 ]
     [[ "$output" == *"function"* ]]
 }
