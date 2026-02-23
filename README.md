@@ -249,4 +249,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Jeryl Estopace ([@jeryldev](https://github.com/jeryldev))
+[Jeryl Donato Estopace](https://www.linkedin.com/in/jeryldev/) ([@jeryldev](https://github.com/jeryldev))
