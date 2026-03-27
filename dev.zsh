@@ -400,7 +400,7 @@ _dev_bind_popup() {
 _dev_setup_popup_keybindings() {
     tmux list-sessions &>/dev/null || return 1
     if _dev_validate_ai_cmd; then
-        _dev_bind_popup a ai "ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
+        _dev_bind_popup a ai "[ -f ~/.ssh/id_ed25519 ] && ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
     fi
     _dev_has_command kb && _dev_bind_popup k kb kb
     _dev_has_command lazygit && _dev_bind_popup g lg lazygit
