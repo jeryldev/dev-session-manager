@@ -2,8 +2,6 @@
 # Dev session manager installer
 # https://github.com/jeryldev/dev-session-manager
 
-set -e
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,7 +13,7 @@ echo -e "${GREEN}Dev session manager installer${NC}"
 echo ""
 
 # Check for zsh
-if [[ ! "$SHELL" == *"zsh"* ]] && [[ ! -f ~/.zshrc ]]; then
+if [[ ! "$SHELL" == *"zsh"* ]] && [[ ! -f "$HOME/.zshrc" ]]; then
   echo -e "${RED}Error: This tool requires zsh${NC}"
   echo -e "${YELLOW}Install zsh and set it as your default shell first${NC}"
   exit 1
@@ -109,7 +107,7 @@ fi
 ZSHRC="${HOME}/.zshrc"
 SOURCE_LINE='[[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh'
 
-if ! grep -q "dev.zsh" "$ZSHRC" 2>/dev/null; then
+if ! grep -qF "$SOURCE_LINE" "$ZSHRC" 2>/dev/null; then
   echo "" >>"$ZSHRC"
   echo "# Dev session manager" >>"$ZSHRC"
   echo "$SOURCE_LINE" >>"$ZSHRC"

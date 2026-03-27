@@ -257,8 +257,11 @@ dev() {
                 return 1
             fi
             echo -e "${BLUE}Reloading dev configuration...${NC}"
-            _dev_setup_popup_keybindings
-            echo -e "${GREEN}✓ Popup keybindings updated${NC}"
+            if _dev_setup_popup_keybindings; then
+                echo -e "${GREEN}✓ Popup keybindings updated${NC}"
+            else
+                echo -e "${YELLOW}⚠ Some keybindings were skipped${NC}"
+            fi
             ;;
 
         tmux|t)
@@ -342,9 +345,13 @@ dev() {
 
             # Check if session already exists
             if tmux has-session -t "$session_name" 2>/dev/null; then
+                if [[ ! -t 0 ]]; then
+                    echo -e "${RED}Error: Session '${display_name}' already exists (non-interactive, cannot prompt)${NC}"
+                    return 1
+                fi
                 echo -e "${YELLOW}⚠ Session '${display_name}' already exists!${NC}"
                 echo -ne "${GREEN}Attach to it? (y/n) ${NC}"
-                read choice
+                read -r choice
                 case "$choice" in
                     y|Y)
                         _dev_attach_session "$session_name" "Attaching to: ${display_name}"
@@ -376,8 +383,14 @@ dev() {
     esac
 }
 
-# Bind a key to open a persistent popup session per tmux window
-# Usage: _dev_bind_popup <key> <session_prefix> <command> [session_suffix]
+_dev_validate_ai_cmd() {
+    if [[ "$DEV_AI_CMD" == *" "* ]]; then
+        echo -e "${RED}Error: DEV_AI_CMD cannot contain spaces ('${DEV_AI_CMD}')${NC}"
+        return 1
+    fi
+    return 0
+}
+
 _dev_bind_popup() {
     local key="$1" prefix="$2" cmd="$3" suffix="${4:+-$4}"
     tmux bind-key "$key" run-shell \
@@ -385,8 +398,10 @@ _dev_bind_popup() {
 }
 
 _dev_setup_popup_keybindings() {
-    tmux list-sessions &>/dev/null || return 0
-    _dev_bind_popup a ai "${DEV_AI_CMD}" "${DEV_AI_CMD}"
+    tmux list-sessions &>/dev/null || return 1
+    if _dev_validate_ai_cmd; then
+        _dev_bind_popup a ai "ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
+    fi
     _dev_has_command kb && _dev_bind_popup k kb kb
     _dev_has_command lazygit && _dev_bind_popup g lg lazygit
 }

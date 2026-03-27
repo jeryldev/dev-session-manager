@@ -132,3 +132,38 @@ run_install_decline_all() {
     run bash -c "SHELL=/bin/bash HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
 }
+
+# ─── Issue 1: set -e should not make optional brew failures fatal ───
+
+@test "install.sh does not use set -e" {
+    # set -e makes optional brew install failures fatal even with || guards
+    # The script should not contain set -e at all
+    run bash -c "grep -n '^set -e' '$INSTALL_SH'"
+    [ "$status" -ne 0 ]
+}
+
+# ─── Issue 2: Zsh detection should use OR logic ───
+
+@test "install.sh passes with zsh SHELL but no .zshrc file" {
+    rm -f "$HOME/.zshrc"
+    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    [ "$status" -eq 0 ]
+}
+
+@test "install.sh fails only when SHELL is not zsh AND .zshrc is missing" {
+    rm -f "$HOME/.zshrc"
+    run bash -c "SHELL=/bin/bash HOME='$HOME' bash '$INSTALL_SH'"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"requires zsh"* ]]
+}
+
+# ─── Issue 6: Idempotency check should match exact source line ───
+
+@test "install.sh idempotency matches exact source line not just dev.zsh" {
+    # Pre-populate .zshrc with an unrelated dev.zsh reference
+    echo "# I like dev.zsh very much" > "$HOME/.zshrc"
+    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    [ "$status" -eq 0 ]
+    # The actual source line should have been added despite the comment
+    grep -q "source.*dev.zsh" "$HOME/.zshrc"
+}

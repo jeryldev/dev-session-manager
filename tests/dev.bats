@@ -354,10 +354,12 @@ run_dev() {
 
 # ─── Popup keybinding guards ───
 
-@test "_dev_setup_popup_keybindings succeeds without tmux server" {
-    # Guard returns early if no tmux server is running; binds keys if one is
+@test "_dev_setup_popup_keybindings returns non-zero without tmux server" {
+    if tmux list-sessions &>/dev/null 2>&1; then
+        skip "tmux server is running"
+    fi
     run zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_setup_popup_keybindings"
-    [ "$status" -eq 0 ]
+    [ "$status" -ne 0 ]
 }
 
 @test "_dev_bind_popup is defined after sourcing" {
@@ -409,4 +411,68 @@ run_dev() {
 @test "DEV_DEFAULT_DIR respects DEV_HOME_DIR" {
     run zsh -c "DEV_HOME_DIR=/tmp/test; source '$DEV_ZSH' 2>/dev/null; echo \$DEV_DEFAULT_DIR"
     [ "$output" = "/tmp/test" ]
+}
+
+# ─── Issue 3: read -r and terminal guard for interactive prompts ───
+
+@test "dev.zsh uses read -r for interactive choice prompt" {
+    # Grep for 'read' followed by 'choice' without -r flag (should find zero matches)
+    run grep -nE 'read [^-]' "$DEV_ZSH"
+    if [ "$status" -eq 0 ]; then
+        fail "Found 'read' without -r flag in dev.zsh: $output"
+    fi
+}
+
+@test "dev.zsh has terminal guard for interactive prompt" {
+    # The interactive prompt section should check [[ -t 0 ]] before reading
+    run grep -c '\[\[ -t 0 \]\]' "$DEV_ZSH"
+    [ "$status" -eq 0 ]
+    [ "$output" -ge 1 ]
+}
+
+# ─── Issue 4: DEV_AI_CMD validation rejects spaces ───
+
+@test "DEV_AI_CMD with spaces is rejected at keybinding setup" {
+    run zsh -c "
+        DEV_AI_CMD='claude --flag bad';
+        source '$DEV_ZSH' 2>/dev/null;
+        _dev_validate_ai_cmd
+    "
+    [ "$status" -ne 0 ]
+}
+
+@test "DEV_AI_CMD without spaces passes validation" {
+    run zsh -c "
+        DEV_AI_CMD='claude';
+        source '$DEV_ZSH' 2>/dev/null;
+        _dev_validate_ai_cmd
+    "
+    [ "$status" -eq 0 ]
+}
+
+# ─── Issue 5: Double-prefix normalization ───
+
+@test "_dev_normalize_session_name does not double-prefix dev-dev-" {
+    run_zsh_func '_dev_normalize_session_name dev-myproject'
+    [ "$output" = "dev-myproject" ]
+    # Explicitly verify no double prefix
+    [[ "$output" != "dev-dev-"* ]]
+}
+
+@test "_dev_display_name strips only one prefix from dev-dev-name" {
+    # If someone passes dev-dev-x, display name should be dev-x (one prefix stripped)
+    run_zsh_func '_dev_display_name dev-dev-myproject'
+    [ "$output" = "dev-myproject" ]
+}
+
+# ─── Issue 7: dev reload should not print success when keybindings are skipped ───
+
+@test "dev reload does not print success when keybindings are skipped" {
+    # When _dev_setup_popup_keybindings returns early (no tmux server),
+    # reload should not print the success message
+    if tmux list-sessions &>/dev/null 2>&1; then
+        skip "tmux server is running, cannot test skip path"
+    fi
+    run_dev reload
+    [[ "$output" != *"Popup keybindings updated"* ]]
 }
