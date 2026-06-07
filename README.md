@@ -150,7 +150,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + a` | AI coding assistant | claude (configurable) |
 | `prefix + k` | Kanban board | kb |
 | `prefix + g` | Git UI | lazygit |
-| `prefix + t` | Terminal | `$SHELL` (zsh fallback) |
+| `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
 
 All popups open at 90% x 90% with a single border.
 
@@ -164,7 +164,7 @@ Use `dev reload` to refresh keybindings after installing a new tool.
 
 ### Usage
 
-- **Open**: `prefix + a/k/g/t` opens the popup
+- **Open**: `prefix + a/k/g/j` opens the popup
 - **Close**: `prefix + d` (detach) closes the popup, session stays alive
 - **Reopen**: same keybinding resumes exactly where you left off
 

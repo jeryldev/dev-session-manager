@@ -154,7 +154,7 @@ run_dev() {
     [[ "$output" == *"Prefix a"* ]]
     [[ "$output" == *"Prefix k"* ]]
     [[ "$output" == *"Prefix g"* ]]
-    [[ "$output" == *"Prefix t"* ]]
+    [[ "$output" == *"Prefix j"* ]]
 }
 
 @test "dev help shows session layout" {
