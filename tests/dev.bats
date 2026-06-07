@@ -154,6 +154,7 @@ run_dev() {
     [[ "$output" == *"Prefix a"* ]]
     [[ "$output" == *"Prefix k"* ]]
     [[ "$output" == *"Prefix g"* ]]
+    [[ "$output" == *"Prefix t"* ]]
 }
 
 @test "dev help shows session layout" {
@@ -184,9 +185,10 @@ run_dev() {
 # ─── dev version ───
 
 @test "dev version shows version number" {
+    local expected=$(grep -m1 '^DEV_VERSION=' "$DEV_ZSH" | cut -d'"' -f2)
     run_dev version
     [ "$status" -eq 0 ]
-    [[ "$output" == *"2.1.0"* ]]
+    [[ "$output" == *"$expected"* ]]
 }
 
 @test "dev version shows repository URL" {
@@ -195,15 +197,17 @@ run_dev() {
 }
 
 @test "dev -v is alias for version" {
+    local expected=$(grep -m1 '^DEV_VERSION=' "$DEV_ZSH" | cut -d'"' -f2)
     run_dev -v
     [ "$status" -eq 0 ]
-    [[ "$output" == *"2.1.0"* ]]
+    [[ "$output" == *"$expected"* ]]
 }
 
 @test "dev --version is alias for version" {
+    local expected=$(grep -m1 '^DEV_VERSION=' "$DEV_ZSH" | cut -d'"' -f2)
     run_dev --version
     [ "$status" -eq 0 ]
-    [[ "$output" == *"2.1.0"* ]]
+    [[ "$output" == *"$expected"* ]]
 }
 
 # ─── dev tmux ───
@@ -232,6 +236,7 @@ run_dev() {
     [[ "$output" == *"AI assistant popup"* ]]
     [[ "$output" == *"Kanban board popup"* ]]
     [[ "$output" == *"Git UI popup"* ]]
+    [[ "$output" == *"Terminal popup"* ]]
 }
 
 @test "dev t is alias for tmux" {
@@ -424,8 +429,8 @@ run_dev() {
 }
 
 @test "dev.zsh has terminal guard for interactive prompt" {
-    # The interactive prompt section should check [[ -t 0 ]] before reading
-    run grep -c '\[\[ -t 0 \]\]' "$DEV_ZSH"
+    # The interactive prompt section should check [[ ! -t 0 ]] before reading
+    run grep -cE '\[\[ (! )?-t 0 \]\]' "$DEV_ZSH"
     [ "$status" -eq 0 ]
     [ "$output" -ge 1 ]
 }

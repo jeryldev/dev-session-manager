@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="2.1.0"
+DEV_VERSION="2.2.0"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"
@@ -174,6 +174,7 @@ dev() {
             echo -e "  ${BLUE}Prefix a${NC}          AI assistant (claude)"
             echo -e "  ${BLUE}Prefix k${NC}          Kanban board (kb)"
             echo -e "  ${BLUE}Prefix g${NC}          Git UI (lazygit)"
+            echo -e "  ${BLUE}Prefix t${NC}          Terminal (shell)"
             echo ""
             ;;
 
@@ -315,6 +316,7 @@ dev() {
             echo -e "  ${BLUE}Prefix a${NC}          AI assistant popup"
             echo -e "  ${BLUE}Prefix k${NC}          Kanban board popup"
             echo -e "  ${BLUE}Prefix g${NC}          Git UI popup"
+            echo -e "  ${BLUE}Prefix t${NC}          Terminal popup"
             echo ""
             echo -e "${GREEN}Quick reference:${NC}"
             echo -e "  ${BLUE}Detach${NC} = Prefix d (session stays alive, can reattach)"
@@ -399,6 +401,7 @@ _dev_bind_popup() {
 
 _dev_setup_popup_keybindings() {
     tmux list-sessions &>/dev/null || return 1
+    _dev_bind_popup t term "${SHELL:-zsh}"
     if _dev_validate_ai_cmd; then
         _dev_bind_popup a ai "[ -f ~/.ssh/id_ed25519 ] && ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
     fi

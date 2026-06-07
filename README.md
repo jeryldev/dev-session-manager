@@ -141,7 +141,7 @@ All windows start in your `$DEV_HOME_DIR` (defaults to `~/code`).
 
 ## Popup windows (v2.1)
 
-Persistent popup windows for AI coding, kanban boards, and git management. Each tmux window gets its own popup session, so you can have separate contexts per window.
+Persistent popup windows for AI coding, kanban boards, git management, and a scratch terminal. Each tmux window gets its own popup session, so you can have separate contexts per window.
 
 ### Keybindings
 
@@ -150,6 +150,7 @@ Persistent popup windows for AI coding, kanban boards, and git management. Each 
 | `prefix + a` | AI coding assistant | claude (configurable) |
 | `prefix + k` | Kanban board | kb |
 | `prefix + g` | Git UI | lazygit |
+| `prefix + t` | Terminal | `$SHELL` (zsh fallback) |
 
 All popups open at 90% x 90% with a single border.
 
@@ -163,7 +164,7 @@ Use `dev reload` to refresh keybindings after installing a new tool.
 
 ### Usage
 
-- **Open**: `prefix + a/k/g` opens the popup
+- **Open**: `prefix + a/k/g/t` opens the popup
 - **Close**: `prefix + d` (detach) closes the popup, session stays alive
 - **Reopen**: same keybinding resumes exactly where you left off
 
@@ -177,6 +178,7 @@ Each tmux window gets its own persistent session. The session name is derived fr
 | AI | `dev-myproject` window 4 (testing) | `ai-dev-myproject-4-testing-claude` |
 | Kanban | `dev-myproject` window 5 (editor) | `kb-dev-myproject-5-editor` |
 | Git | `dev-myproject` window 5 (editor) | `lg-dev-myproject-5-editor` |
+| Terminal | `dev-myproject` window 5 (editor) | `term-dev-myproject-5-editor` |
 
 ### Behavior
 
