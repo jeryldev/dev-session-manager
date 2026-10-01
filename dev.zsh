@@ -117,7 +117,13 @@ _dev_attach_session() {
     local session_name="$1" message="$2"
     _dev_setup_popup_keybindings
     echo -e "${BLUE}${message}${NC}"
-    tmux attach -t "$session_name"
+    # Inside tmux, attach would refuse to nest; switching the client is what
+    # the user means.
+    if [[ -n "$TMUX" ]]; then
+        tmux switch-client -t "$session_name"
+    else
+        tmux attach -t "$session_name"
+    fi
 }
 
 # Center text in a box

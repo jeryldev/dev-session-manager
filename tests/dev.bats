@@ -167,6 +167,42 @@ assert_windows_one_to_seven() {
     [[ "$popups" =~ ^[a-zA-Z0-9_-]+$ ]]
 }
 
+# ─── B7: attaching from inside tmux (US-2) ───
+
+# A tmux on PATH that records attach/switch-client instead of running them —
+# both need a real terminal — and passes everything else to the real tmux.
+fake_attaching_tmux() {
+    local real; real="$(command -v tmux)"
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    cat > "$BATS_TEST_TMPDIR/bin/tmux" <<SH
+#!/bin/sh
+case "\$1" in
+  attach|attach-session|switch-client) echo "\$*" >> "$BATS_TEST_TMPDIR/attach.log"; exit 0 ;;
+esac
+exec "$real" "\$@"
+SH
+    chmod +x "$BATS_TEST_TMPDIR/bin/tmux"
+}
+
+@test "dev attach from inside tmux switches the client to the session" {
+    start_isolated_server
+    tmux new-session -d -s dev-other
+    fake_attaching_tmux
+    local sock; sock="$(tmux display-message -p '#{socket_path}')"
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" TMUX="$sock,1,0" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach other" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "switch-client -t dev-other" ]
+}
+
+@test "dev attach from outside tmux attaches" {
+    start_isolated_server
+    tmux new-session -d -s dev-other
+    fake_attaching_tmux
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach dev-other" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t dev-other" ]
+}
+
 # ─── _dev_has_command ───
 
 @test "_dev_has_command detects existing command" {
