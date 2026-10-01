@@ -21,7 +21,12 @@ def main():
     command = sys.argv[sys.argv.index("--") + 1:]
     pid, master = pty.fork()
     if pid == 0:
-        os.execvp(command[0], command)
+        # CI runners often have no TERM (or "dumb"), and tmux will not attach
+        # a client to a terminal it cannot describe.
+        env = dict(os.environ)
+        if env.get("TERM", "") in ("", "dumb", "unknown"):
+            env["TERM"] = "xterm-256color"
+        os.execvpe(command[0], command, env)
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", int(rows), int(cols), 0, 0))
     keys = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
     with open(log, "ab", buffering=0) as out:

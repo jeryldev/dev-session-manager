@@ -1299,6 +1299,8 @@ dev() {
             echo -e "${BLUE}Reloading dev configuration...${NC}"
             if _dev_setup_popup_keybindings force; then
                 echo -e "${GREEN}✓ Popup keybindings updated${NC}"
+                _dev_has_command kb || echo -e "${YELLOW}  kb is not installed, so prefix $(_dev_cfg key_kb) is not bound${NC}"
+                _dev_has_command lazygit || echo -e "${YELLOW}  lazygit is not installed, so prefix $(_dev_cfg key_git) is not bound${NC}"
             else
                 echo -e "${YELLOW}⚠ Some keybindings were skipped${NC}"
             fi
@@ -1781,7 +1783,9 @@ _dev_setup_popup_keybindings() {
 
     tmux set-option -g @dev_key_conflicts "${(j:;:)_dev_key_conflicts}"
     tmux set-option -g @dev_bind_sig "$signature"
-    _dev_has_command kb && _dev_has_command lazygit && (( ! bind_status ))
+    # Missing optional tools are not a failure: their keys are simply left
+    # unbound, and `dev reload` says so. Only a binding error is.
+    return $bind_status
 }
 
 # ─── Workspace agents: dev agent start / send / status ───
@@ -2314,5 +2318,7 @@ _dev_overview() {
 if [[ "${zsh_eval_context[-1]}" != "file" ]]; then
     dev "$@"
 else
-    _dev_setup_popup_keybindings
+    # Loading dev never fails a shell's startup: with no tmux server yet there
+    # is simply nothing to bind.
+    _dev_setup_popup_keybindings || true
 fi

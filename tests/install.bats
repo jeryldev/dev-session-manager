@@ -39,7 +39,8 @@ run_install_decline_all() {
 # ─── Config directory creation ───
 
 @test "install.sh creates ~/.config/zsh directory" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    # The variables belong to the installer, not to printf.
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     [ -d "$HOME/.config/zsh" ]
 }
@@ -47,28 +48,28 @@ run_install_decline_all() {
 # ─── dev.zsh file copy ───
 
 @test "install.sh copies dev.zsh to config directory" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     [ -f "$HOME/.config/zsh/dev.zsh" ]
 }
 
 @test "copied dev.zsh has same content as source" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     diff "$PROJECT_ROOT/dev.zsh" "$HOME/.config/zsh/dev.zsh"
 }
 
 # ─── .zshrc source line ───
 
 @test "install.sh adds source line to .zshrc" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     grep -q "dev.zsh" "$HOME/.zshrc"
 }
 
 @test "install.sh source line is idempotent" {
     # Run twice
-    bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'" 2>/dev/null
-    bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'" 2>/dev/null
+    bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'" 2>/dev/null
+    bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'" 2>/dev/null
 
     local count=$(grep -c "dev.zsh" "$HOME/.zshrc")
     # Should only have the source line once (the [[ -f ... ]] && source line)
@@ -78,21 +79,21 @@ run_install_decline_all() {
 }
 
 @test "install.sh shows 'already exists' on second run" {
-    bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'" 2>/dev/null
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'" 2>/dev/null
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [[ "$output" == *"already exists"* ]]
 }
 
 # ─── Completion message ───
 
 @test "install.sh shows completion message" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Installation complete"* ]]
 }
 
 @test "install.sh shows next steps" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [[ "$output" == *"source ~/.zshrc"* ]]
     [[ "$output" == *"dev help"* ]]
 }
@@ -100,14 +101,14 @@ run_install_decline_all() {
 # ─── Optional tools section ───
 
 @test "install.sh shows optional tools section" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     # Should mention at least one of the optional tools
     [[ "$output" == *"claude"* ]] || [[ "$output" == *"popup"* ]]
 }
 
 @test "install.sh shows skip message when declining optional tool" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     # Should show skip/install-later messages or checkmarks for already-installed tools
     [[ "$output" == *"Skipped"* ]] || [[ "$output" == *"✓"* ]]
@@ -116,7 +117,7 @@ run_install_decline_all() {
 # ─── Installer header ───
 
 @test "install.sh shows installer header" {
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [[ "$output" == *"Dev session manager installer"* ]]
 }
 
@@ -148,7 +149,7 @@ run_install_decline_all() {
 
 @test "install.sh passes with zsh SHELL but no .zshrc file" {
     rm -f "$HOME/.zshrc"
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
 }
 
@@ -164,7 +165,7 @@ run_install_decline_all() {
 @test "install.sh idempotency matches exact source line not just dev.zsh" {
     # Pre-populate .zshrc with an unrelated dev.zsh reference
     echo "# I like dev.zsh very much" > "$HOME/.zshrc"
-    run bash -c "SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | bash '$INSTALL_SH'"
+    run bash -c "printf 'n\nn\nn\n' | SHELL=/bin/zsh HOME='$HOME' bash '$INSTALL_SH'"
     [ "$status" -eq 0 ]
     # The actual source line should have been added despite the comment
     grep -q "source.*dev.zsh" "$HOME/.zshrc"
