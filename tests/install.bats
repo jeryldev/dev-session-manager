@@ -169,3 +169,23 @@ run_install_decline_all() {
     # The actual source line should have been added despite the comment
     grep -q "source.*dev.zsh" "$HOME/.zshrc"
 }
+
+# ─── B5: a failed download is a failed install (US-5) ───
+
+@test "install.sh fails, and touches nothing, when the download fails" {
+    # A copy without dev.zsh beside it takes the download path.
+    local dir; dir="$(mktemp -d)"
+    cp "$INSTALL_SH" "$dir/install.sh"
+    mkdir -p "$dir/bin"
+    printf '#!/bin/sh\nexit 22\n' > "$dir/bin/curl"
+    chmod +x "$dir/bin/curl"
+    local before; before="$(cat "$HOME/.zshrc")"
+
+    run bash -c "PATH='$dir/bin:$PATH' SHELL=/bin/zsh HOME='$HOME' printf 'n\nn\nn\n' | PATH='$dir/bin:$PATH' SHELL=/bin/zsh HOME='$HOME' bash '$dir/install.sh'"
+    rm -rf "$dir"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"Downloaded dev.zsh"* ]]
+    [[ "$output" != *"Installation complete"* ]]
+    [ "$(cat "$HOME/.zshrc")" = "$before" ]
+}

@@ -99,7 +99,14 @@ if [[ -f "${SCRIPT_DIR}/dev.zsh" ]]; then
 else
   # Download from GitHub if running via curl
   echo -e "${BLUE}Downloading dev.zsh...${NC}"
-  curl -fsSL https://raw.githubusercontent.com/jeryldev/dev-session-manager/main/dev.zsh -o "${CONFIG_DIR}/dev.zsh"
+  # Download beside the target and move it into place, so a failed download
+  # neither reports success nor leaves a partial file for .zshrc to source.
+  if ! curl -fsSL https://raw.githubusercontent.com/jeryldev/dev-session-manager/main/dev.zsh -o "${CONFIG_DIR}/dev.zsh.download"; then
+    rm -f "${CONFIG_DIR}/dev.zsh.download"
+    echo -e "${RED}✗${NC} Could not download dev.zsh. Nothing was installed; check your connection and run the installer again."
+    exit 1
+  fi
+  mv "${CONFIG_DIR}/dev.zsh.download" "${CONFIG_DIR}/dev.zsh"
   echo -e "${GREEN}✓${NC} Downloaded dev.zsh to ${CONFIG_DIR}/"
 fi
 
