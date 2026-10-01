@@ -370,6 +370,12 @@ dev() {
             echo -e "${GREEN}Creating session: ${display_name}${NC}"
 
             tmux new-session -d -s "$session_name" -n "frontend" -c "$DEV_DEFAULT_DIR"
+            # Windows are 1-7 on any config, as `dev help` says: new-session
+            # puts the first window at the server's base-index, 0 on a stock
+            # config, which left `prefix 1` reaching nothing.
+            tmux set-option -t "$session_name" base-index 1
+            local first_index=$(tmux display-message -p -t "$session_name" '#{window_index}')
+            [[ "$first_index" == "1" ]] || tmux move-window -s "${session_name}:${first_index}" -t "$session_name:1"
             tmux new-window -t "$session_name:2" -n "backend" -c "$DEV_DEFAULT_DIR"
             tmux new-window -t "$session_name:3" -n "database" -c "$DEV_DEFAULT_DIR"
             tmux new-window -t "$session_name:4" -n "testing" -c "$DEV_DEFAULT_DIR"
@@ -377,8 +383,7 @@ dev() {
             tmux new-window -t "$session_name:6" -n "scratch" -c "$DEV_DEFAULT_DIR"
             tmux new-window -t "$session_name:7" -n "extra" -c "$DEV_DEFAULT_DIR"
 
-            # Select the editor window (window 5)
-            tmux select-window -t "$session_name:5"
+            tmux select-window -t "${session_name}:editor"
 
             _dev_attach_session "$session_name" "Created 7 windows, starting at editor"
             ;;

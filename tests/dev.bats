@@ -98,24 +98,27 @@ run_dev() {
 
 # ─── B8: advertised window numbers must exist (US-1) ───
 
-@test "dev <name> numbers its seven windows contiguously from base-index" {
-    # `dev help` advertises windows 1-7. The code hardcodes -t <session>:2..:7
-    # while new-session puts the first window at the server's base-index. On the
-    # developer's machine base-index is 1 and the two line up; on a stock config
-    # base-index is 0, the windows land on 0 and 2-7, and `prefix 1` reaches
-    # nothing at all. Assert contiguity from base-index so this holds either way.
-    create_dev_session layout
-    local base; base="$(tmux show-option -gv base-index)"
-
-    local expected="" i=0
-    for name in frontend backend database testing editor scratch extra; do
-        expected+="$((base + i)):$name"$'\n'
-        i=$((i + 1))
-    done
-
-    run tmux list-windows -t dev-layout -F '#{window_index}:#{window_name}'
+# `dev help` advertises windows 1-7 and `prefix 1` must reach frontend, on any
+# config (US-1.1, US-1.2). The code used to hardcode -t <session>:2..:7 while
+# new-session put the first window at the server's base-index: on a stock config
+# (base-index 0) that gave 0,2,3,4,5,6,7 and `prefix 1` reached nothing.
+assert_windows_one_to_seven() {
+    run tmux list-windows -t "$1" -F '#{window_index}:#{window_name}'
     [ "$status" -eq 0 ]
-    [ "$output" = "${expected%$'\n'}" ]
+    [ "$output" = $'1:frontend\n2:backend\n3:database\n4:testing\n5:editor\n6:scratch\n7:extra' ]
+}
+
+@test "dev <name> numbers its windows 1-7 on a stock config (base-index 0)" {
+    create_dev_session layout
+    [ "$(tmux show-option -gv base-index)" = "0" ]
+    assert_windows_one_to_seven dev-layout
+}
+
+@test "dev <name> numbers its windows 1-7 under base-index 1" {
+    start_isolated_server
+    tmux set-option -g base-index 1
+    create_dev_session layout
+    assert_windows_one_to_seven dev-layout
 }
 
 @test "dev <name> opens on the editor window, whatever its index" {
