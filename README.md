@@ -208,7 +208,11 @@ Use `dev reload` to refresh keybindings after installing a new tool.
 
 ### Session identity
 
-Each tmux window gets its own persistent session. The session name is derived from your tmux session, window number, and window name:
+In a grid, each tab's popups belong to its worktree: renaming the tab, `cd`-ing elsewhere, or pressing
+the key inside another popup all reach the same popup, and the AI popup resumes the same Claude
+conversation even after the tmux server restarts and the grid is rebuilt.
+
+Outside a grid, each tmux window gets its own persistent session. The session name is derived from your tmux session, window number, and window name:
 
 | Popup | Window | Session name |
 |-------|--------|-------------|
@@ -227,7 +231,9 @@ Changing directories with `cd` does not affect which session you get. The sessio
 
 ### AI tool customization
 
-The AI popup uses `claude` by default. Set `DEV_AI_CMD` to use a different tool — see [Configuration](#configuration) for where, which depends on how you installed.
+The AI popup uses `claude` by default. Use `dev config set ai_cmd <tool>` (or `DEV_AI_CMD`) for a
+different one; `--enable-auto-mode` is only added for claude. Earlier versions also ran
+`ssh-add ~/.ssh/id_ed25519` silently before the tool; set `ssh_key` if you relied on that.
 
 Supported tools:
 
@@ -240,12 +246,28 @@ Supported tools:
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEV_HOME_DIR` | `~/code` | Base directory for new session windows |
-| `DEV_AI_CMD` | `claude` | AI coding tool for the popup (`prefix + a`) |
+The simplest way, the same for every install:
 
-Where you set them depends on how you installed.
+```bash
+dev config set ai_cmd aider
+dev config list          # every setting, its value, and where it came from
+dev config unset ai_cmd
+```
+
+Settings live in `~/.config/dev-session-manager/config` (`key = value` lines). An exported environment
+variable overrides the file for as long as it is set.
+
+| Setting | Variable | Default | Description |
+|---------|----------|---------|-------------|
+| `home_dir` | `DEV_HOME_DIR` | `~/code` | Base directory for `dev <name>` windows |
+| `windows` | `DEV_WINDOWS` | `editor,server,test,shell` | Windows `dev <name>` creates |
+| `ai_cmd` | `DEV_AI_CMD` | `claude` | AI tool for `prefix + a` (one word) |
+| `ai_args` | `DEV_AI_ARGS` | `--enable-auto-mode` for claude, none otherwise | Flags for the AI tool |
+| `ssh_key` | `DEV_SSH_KEY` | unset | Key to `ssh-add` before the AI tool starts |
+| `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
+| `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
+
+To use environment variables instead, where you set them depends on how you installed.
 
 ### Homebrew
 

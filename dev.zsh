@@ -55,6 +55,102 @@ _dev_config_file_value() {
     return 1
 }
 
+# Malformed lines in the config file, as "line N: text", for `dev config list`.
+_dev_config_problems() {
+    setopt localoptions extendedglob
+    local file="$(_dev_config_file)" line n=0
+    [[ -r "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        (( n++ ))
+        [[ -z "${line//[[:space:]]/}" || "$line" == [[:space:]]#\#* ]] && continue
+        [[ "$line" == *=* ]] || print -r -- "line ${n}: ${line}"
+    done < "$file"
+}
+
+# Refuses a value that would break where it is used; the message says why.
+_dev_config_check() {
+    local key="$1" value="$2"
+    if [[ "$value" == *$'\n'* ]]; then
+        echo -e "${RED}Error: a setting is one line${NC}"
+        return 1
+    fi
+    case "$key" in
+        ai_cmd)
+            if [[ "$value" == *[[:space:]]* ]]; then
+                echo -e "${RED}Error: ai_cmd is one word; put flags in ai_args${NC}"
+                return 1
+            fi
+            ;;
+        windows)
+            DEV_WINDOWS="$value" _dev_window_names >/dev/null || return 1
+            ;;
+    esac
+}
+
+_dev_config() {
+    local action="$1" key="$2" value="$3" file="$(_dev_config_file)"
+    if [[ "$action" == (get|set|unset) && -z "${_DEV_CFG_ENV[$key]+set}" ]]; then
+        echo -e "${RED}Error: unknown setting '${key}'${NC}"
+        echo -e "${YELLOW}Settings: ${(oj:, :)${(k)_DEV_CFG_ENV}}${NC}"
+        return 1
+    fi
+    case "$action" in
+        get)
+            value="$(_dev_cfg "$key")"
+            [[ -n "$value" ]] || return 1
+            print -r -- "$value"
+            ;;
+        set|unset)
+            if [[ "$action" == set ]]; then
+                _dev_config_check "$key" "$value" || return 1
+            fi
+            mkdir -p "${file:h}" || return 1
+            local tmp="${file}.tmp.$$" line
+            {
+                if [[ -r "$file" ]]; then
+                    while IFS= read -r line || [[ -n "$line" ]]; do
+                        [[ "${${line%%=*}//[[:space:]]/}" == "$key" && "$line" == *=* ]] && continue
+                        print -r -- "$line"
+                    done < "$file"
+                fi
+                if [[ "$action" == set ]]; then
+                    print -r -- "${key} = ${value}"
+                fi
+            } > "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+            # A running server keeps what dev last published; refresh it so the
+            # agent key sees the change without a new shell.
+            tmux list-sessions &>/dev/null && _dev_setup_popup_keybindings
+            return 0
+            ;;
+        list)
+            local problem env_var source
+            for problem in ${(f)"$(_dev_config_problems)"}; do
+                echo -e "${YELLOW}⚠ ${file}: ${problem} (not key = value; ignored)${NC}"
+            done
+            for key in ${(o)${(k)_DEV_CFG_ENV}}; do
+                env_var="${_DEV_CFG_ENV[$key]}"
+                if [[ -n "${(P)env_var}" ]]; then
+                    source="(env ${env_var})"
+                elif value="$(_dev_config_file_value "$key")" && [[ -n "$value" ]]; then
+                    source="(file)"
+                elif [[ -n "${_DEV_CFG_DEFAULT[$key]}" ]]; then
+                    source="(default)"
+                else
+                    source="(unset)"
+                fi
+                printf "  %-20s %-32s %s\n" "$key" "$(_dev_cfg "$key")" "$source"
+            done
+            ;;
+        path)
+            print -r -- "$file"
+            ;;
+        *)
+            echo -e "${RED}Usage: dev config get <key> | set <key> <value> | unset <key> | list | path${NC}"
+            return 1
+            ;;
+    esac
+}
+
 _dev_cfg() {
     local key="$1" env_var="${_DEV_CFG_ENV[$1]}" value
     if [[ -n "$env_var" && -n "${(P)env_var}" ]]; then
@@ -537,6 +633,7 @@ dev() {
             echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session and its popups"
             echo -e "  ${BLUE}dev clean${NC}          Remove popups whose session is gone"
             echo -e "  ${BLUE}dev${NC}                In a git repo: same as dev grid"
+            echo -e "  ${BLUE}dev config list${NC}    Settings, and where each comes from"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
@@ -688,6 +785,10 @@ dev() {
                     return 1
                     ;;
             esac
+            ;;
+
+        config)
+            _dev_config "$2" "$3" "$4"
             ;;
 
         __agent)
