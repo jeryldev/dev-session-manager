@@ -123,11 +123,12 @@ _dev_attach_session() {
     _dev_setup_popup_keybindings
     echo -e "${BLUE}${message}${NC}"
     # Inside tmux, attach would refuse to nest; switching the client is what
-    # the user means.
+    # the user means. '=' makes the name exact: tmux otherwise falls back to a
+    # prefix match, and dev-proj would reach dev-project.
     if [[ -n "$TMUX" ]]; then
-        tmux switch-client -t "$session_name"
+        tmux switch-client -t "=${session_name}"
     else
-        tmux attach -t "$session_name"
+        tmux attach -t "=${session_name}"
     fi
 }
 
@@ -232,7 +233,7 @@ dev() {
             local session_name=$(_dev_normalize_session_name "$2")
             local display_name=$(_dev_display_name "$session_name")
 
-            if tmux has-session -t "$session_name" 2>/dev/null; then
+            if tmux has-session -t "=${session_name}" 2>/dev/null; then
                 _dev_attach_session "$session_name" "Attaching to: ${display_name}"
             else
                 _dev_session_not_found "$display_name"
@@ -257,8 +258,8 @@ dev() {
             local session_name=$(_dev_normalize_session_name "$2")
             local display_name=$(_dev_display_name "$session_name")
 
-            if tmux has-session -t "$session_name" 2>/dev/null; then
-                tmux kill-session -t "$session_name"
+            if tmux has-session -t "=${session_name}" 2>/dev/null; then
+                tmux kill-session -t "=${session_name}"
                 echo -e "${GREEN}✓ Killed session: ${display_name}${NC}"
             else
                 _dev_session_not_found "$display_name"
@@ -359,7 +360,7 @@ dev() {
             local display_name=$(_dev_display_name "$session_name")
 
             # Check if session already exists
-            if tmux has-session -t "$session_name" 2>/dev/null; then
+            if tmux has-session -t "=${session_name}" 2>/dev/null; then
                 if [[ ! -t 0 ]]; then
                     echo -e "${RED}Error: Session '${display_name}' already exists (non-interactive, cannot prompt)${NC}"
                     return 1

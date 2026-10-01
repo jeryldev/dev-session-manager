@@ -191,7 +191,7 @@ SH
     local sock; sock="$(tmux display-message -p '#{socket_path}')"
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" TMUX="$sock,1,0" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach other" </dev/null
     [ "$status" -eq 0 ]
-    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "switch-client -t dev-other" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "switch-client -t =dev-other" ]
 }
 
 @test "dev attach from outside tmux attaches" {
@@ -200,7 +200,7 @@ SH
     fake_attaching_tmux
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach dev-other" </dev/null
     [ "$status" -eq 0 ]
-    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t dev-other" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t =dev-other" ]
 }
 
 # ─── B6: colour only on a terminal (US-4) ───
@@ -708,3 +708,34 @@ sys.exit(proc.wait())
     run_dev reload
     [[ "$output" != *"Popup keybindings updated"* ]]
 }
+
+# ─── B9: a name never reaches a different session by prefix ───
+
+# tmux resolves -t by exact name, then falls back to a prefix match, so a
+# missing dev-proj silently became dev-project.
+
+@test "dev kill does not kill a session whose name merely starts with it" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-project
+    run_dev kill proj
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not found"* ]]
+    tmux has-session -t '=dev-project'
+}
+
+@test "dev attach does not attach to a session whose name merely starts with it" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-project
+    fake_attaching_tmux
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach proj" </dev/null
+    [[ "$output" == *"not found"* ]]
+    [ ! -s "$BATS_TEST_TMPDIR/attach.log" ]
+}
+
+@test "dev <name> creates its session when only a longer name exists" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-project
+    create_dev_session proj
+    tmux has-session -t '=dev-proj'
+}
+
