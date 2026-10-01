@@ -10,8 +10,10 @@
 # Version
 DEV_VERSION="3.0.0"
 
-# This file, sourced or executed: key bindings run it again from tmux.
-DEV_SCRIPT="${${(%):-%x}:A}"
+# This file, sourced or executed: key bindings run it again from tmux. Made
+# absolute but not resolved: Homebrew's bin/dev is a symlink into a versioned
+# Cellar directory that the next upgrade removes.
+DEV_SCRIPT="${${(%):-%x}:a}"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"

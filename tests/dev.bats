@@ -1032,3 +1032,16 @@ reserved_names() {
     run_dev help
     [[ "$output" != *"3.3 or newer"* ]]
 }
+
+@test "the keys point at dev's path as installed, not where a symlink resolves" {
+    # Homebrew installs bin/dev as a symlink into a versioned Cellar directory
+    # that an upgrade deletes; keys bound to it would break until dev ran again.
+    mkdir -p "$BATS_TEST_TMPDIR/cellar/9.9/bin" "$BATS_TEST_TMPDIR/opt/bin"
+    cp "$DEV_ZSH" "$BATS_TEST_TMPDIR/cellar/9.9/bin/dev"
+    ln -s "$BATS_TEST_TMPDIR/cellar/9.9/bin/dev" "$BATS_TEST_TMPDIR/opt/bin/dev"
+    start_isolated_server
+    run zsh "$BATS_TEST_TMPDIR/opt/bin/dev" reload </dev/null
+    local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "a"')"
+    [[ "$binding" == *"$BATS_TEST_TMPDIR/opt/bin/dev"* ]]
+    [[ "$binding" != *"cellar"* ]]
+}
