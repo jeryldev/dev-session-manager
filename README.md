@@ -89,6 +89,15 @@ dev grid add fix-login  # new worktree for the branch, opened as the next tab
 dev grid status         # each tab's branch and uncommitted changes
 ```
 
+When you add or remove worktrees outside dev, re-entering the grid tells you; nothing changes until
+you ask:
+
+```bash
+dev grid sync           # a tab for each new worktree; existing tab numbers never change
+dev grid prune          # close the tabs (and popups) of worktrees that were removed
+dev grid kill           # close the whole grid; each takes --dry-run
+```
+
 `prefix + N` does the same as `dev grid add`, asking for the branch in a small popup. A grid holds up to
 9 tabs, so `prefix + 1`-`9` always reaches them.
 

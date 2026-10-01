@@ -385,6 +385,13 @@ _dev_grid_build() {
     if tmux has-session -t "=${session_name}" 2>/dev/null; then
         stamp="$(tmux show-options -t "=${session_name}:" -v @dev_grid 2>/dev/null)"
         if [[ "$stamp" == "$repo" ]]; then
+            # Report drift, never act on it: a removed worktree's tab may hold
+            # unsaved work, and new ones are added only when asked.
+            local -a added removed
+            _dev_grid_drift "$repo" "$session_name"
+            if (( ${#added} + ${#removed} )); then
+                echo -e "${YELLOW}⚠ $(_dev_plural ${#added} workspace) added, ${#removed} removed — run 'dev grid sync' / 'dev grid prune'${NC}"
+            fi
             _dev_attach_session "$session_name" "Attaching to grid: ${display_name}"
             return
         elif [[ -z "$stamp" ]]; then
@@ -514,13 +521,7 @@ _dev_grid_add() {
         done < <(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{@dev_workspace}')
     fi
 
-    # Fill the first free number rather than appending past 9: existing tabs
-    # never move, and the new one stays reachable with prefix N.
-    local -a used=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}')"})
-    local free=""
-    for index in {1..9}; do
-        (( ${used[(Ie)$index]} )) || { free="$index"; break; }
-    done
+    local free="$(_dev_grid_free_indexes "$grid_session" | head -1)"
     if [[ -z "$free" ]]; then
         echo -e "${RED}Error: the grid already has 9 tabs (prefix 1-9)${NC}"
         return 1
@@ -530,8 +531,7 @@ _dev_grid_add() {
         wt_path="$(_dev_create_worktree "$repo" "$branch")" || return 1
     fi
 
-    tmux new-window -t "=${grid_session}:${free}" -n "${wt_path:t}" -c "$wt_path"
-    _dev_stamp_workspace "=${grid_session}:${free}" "$wt_path" "$repo"
+    _dev_grid_open_tab "$grid_session" "$free" "$wt_path" "$repo"
     _dev_grid_show_tab "$grid_session" "$free"
     echo -e "${GREEN}✓ ${branch} is tab ${free}${NC}"
 }
@@ -588,6 +588,112 @@ _dev_create_worktree() {
         fi
     fi
     print -r -- "${wt_path:A}"
+}
+
+# Tab numbers 1-9 not in use, lowest first. New tabs fill these rather than
+# appending past 9: existing tabs never move, and every tab stays reachable
+# with prefix N.
+_dev_grid_free_indexes() {
+    local -a used=(${(f)"$(tmux list-windows -t "=${1}:" -F '#{window_index}')"})
+    local index
+    for index in {1..9}; do
+        (( ${used[(Ie)$index]} )) || print -r -- "$index"
+    done
+}
+
+_dev_grid_open_tab() {
+    local grid_session="$1" index="$2" wt_path="$3" repo="$4"
+    tmux new-window -d -t "=${grid_session}:${index}" -n "${wt_path:t}" -c "$wt_path"
+    _dev_stamp_workspace "=${grid_session}:${index}" "$wt_path" "$repo"
+}
+
+# Worktrees with no tab (into `added`) and tabs whose worktree is gone (into
+# `removed`, as "index|path"), for the caller's arrays.
+_dev_grid_drift() {
+    local repo="$1" grid_session="$2" index workspace
+    local -a worktrees=(${(f)"$(_dev_worktrees "$repo" 2>/dev/null)"}) tabs=()
+    while IFS='|' read -r index workspace; do
+        [[ -n "$workspace" ]] || continue
+        tabs+=("$workspace")
+        (( ${worktrees[(Ie)$workspace]} )) || removed+=("${index}|${workspace}")
+    done < <(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{@dev_workspace}')
+    for workspace in "${worktrees[@]}"; do
+        (( ${tabs[(Ie)$workspace]} )) || added+=("$workspace")
+    done
+}
+
+_dev_grid_sync() {
+    local dry_run=0 repo grid_session
+    [[ "$1" == "--dry-run" ]] && dry_run=1
+    _dev_grid_locate || return 1
+    local -a added removed free=(${(f)"$(_dev_grid_free_indexes "$grid_session")"})
+    _dev_grid_drift "$repo" "$grid_session"
+    if (( ! ${#added} )); then
+        echo -e "${GREEN}✓ Nothing to sync${NC}"
+        return 0
+    fi
+    if (( ${#added} > ${#free} )); then
+        echo -e "${RED}Error: $(_dev_plural ${#added} "new worktree"), but only ${#free} free tabs (prefix 1-9)${NC}"
+        echo -e "${YELLOW}Remove tabs with 'dev grid prune' after 'git worktree remove', or close a tab you no longer need${NC}"
+        return 1
+    fi
+    local i
+    for (( i = 1; i <= ${#added}; i++ )); do
+        if (( dry_run )); then
+            echo "  would add ${added[i]:t} as tab ${free[i]}"
+        else
+            _dev_grid_open_tab "$grid_session" "${free[i]}" "${added[i]}" "$repo"
+            echo -e "${GREEN}✓ ${added[i]:t} is tab ${free[i]}${NC}"
+        fi
+    done
+}
+
+_dev_grid_prune() {
+    local dry_run=0 repo grid_session
+    [[ "$1" == "--dry-run" ]] && dry_run=1
+    _dev_grid_locate || return 1
+    local -a added removed
+    _dev_grid_drift "$repo" "$grid_session"
+    if (( ! ${#removed} )); then
+        echo -e "${GREEN}✓ Nothing to prune${NC}"
+        return 0
+    fi
+    local entry index workspace ws_id sid parent popup_ws
+    for entry in "${removed[@]}"; do
+        index="${entry%%|*}" workspace="${entry#*|}"
+        if (( dry_run )); then
+            echo "  would remove tab ${index} (${workspace:t})"
+            continue
+        fi
+        # The tab's popups carry its workspace id; they go with it.
+        ws_id="$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_ws_id)"
+        if [[ -n "$ws_id" ]]; then
+            tmux list-windows -a -F '#{session_id}|#{@dev_parent}|#{@dev_ws_id}' |
+                while IFS='|' read -r sid parent popup_ws; do
+                    [[ -n "$parent" && "$popup_ws" == "$ws_id" ]] && tmux kill-session -t "$sid" 2>/dev/null
+                done
+        fi
+        tmux kill-window -t "=${grid_session}:${index}"
+        echo -e "${GREEN}✓ Removed tab ${index} (${workspace:t})${NC}"
+    done
+}
+
+_dev_grid_kill() {
+    local dry_run=0 repo grid_session
+    [[ "$1" == "--dry-run" ]] && dry_run=1
+    _dev_grid_locate || return 1
+    local session_id="$(tmux display-message -p -t "=${grid_session}:" '#{session_id}')"
+    local -a popups=(${(f)"$(_dev_popup_descendants "$session_id")"})
+    if (( dry_run )); then
+        echo "  would kill ${grid_session} and $(_dev_plural ${#popups} popup)"
+        return 0
+    fi
+    local popup_id
+    for popup_id in "${popups[@]}"; do
+        tmux kill-session -t "$popup_id" 2>/dev/null
+    done
+    tmux kill-session -t "$session_id"
+    echo -e "${GREEN}✓ Killed ${grid_session} (and $(_dev_plural ${#popups} popup))${NC}"
 }
 
 _dev_grid_show_tab() {
@@ -653,6 +759,9 @@ dev() {
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
+            echo -e "  ${BLUE}dev grid sync${NC}      Add tabs for new worktrees (--dry-run)"
+            echo -e "  ${BLUE}dev grid prune${NC}     Remove tabs of removed worktrees (--dry-run)"
+            echo -e "  ${BLUE}dev grid kill${NC}      Close the grid and its popups (--dry-run)"
             echo -e "  ${BLUE}dev reload${NC}         Reload popup keybindings"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
@@ -801,10 +910,13 @@ dev() {
             case "$2" in
                 "") _dev_grid_build ;;
                 status) _dev_grid_status ;;
+                sync) _dev_grid_sync "$3" ;;
+                prune) _dev_grid_prune "$3" ;;
+                kill) _dev_grid_kill "$3" ;;
                 add) _dev_grid_add "$3" ;;
                 *)
                     echo -e "${RED}Unknown grid command: $2${NC}"
-                    echo -e "${YELLOW}Usage: dev grid [status | add <branch>]${NC}"
+                    echo -e "${YELLOW}Usage: dev grid [status | add <branch> | sync | prune | kill] [--dry-run]${NC}"
                     return 1
                     ;;
             esac

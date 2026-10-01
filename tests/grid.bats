@@ -399,3 +399,128 @@ run_bare_dev() {
     [ "$(tmux list-sessions | grep -c grid)" -eq 1 ]
     [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
 }
+
+# ─── Drift, sync, prune, kill (US-16, US-19, US-20, US-21, D13, D14) ───
+
+grid_cmd() {
+    local dir="$1"; shift
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid "$@"' _ "$dir" "$DEV_ZSH" "$@" </dev/null
+}
+
+@test "re-entering a grid reports worktrees added and removed" {
+    # US-19.1 / US-20.1
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b gone "$CODE/myrepo-gone"
+    run_grid "$repo"
+    git -C "$repo" worktree add -q -b new1 "$CODE/myrepo-new1"
+    git -C "$repo" worktree add -q -b new2 "$CODE/myrepo-new2"
+    git -C "$repo" worktree remove "$CODE/myrepo-gone"
+    run_grid "$repo"
+    [[ "$output" == *"2 workspaces added, 1 removed"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-gone' ]
+}
+
+@test "sync appends new worktrees and leaves every tab number alone" {
+    # US-19.2/19.3
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    run_grid "$repo"
+    git -C "$repo" worktree add -q -b b "$CODE/myrepo-b"
+    grid_cmd "$repo" sync
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-a\n3 myrepo-b' ]
+    [[ "$(tmux show-options -w -t '=dev-myrepo-grid:3' -v @dev_ws_id)" =~ ^myrepo-b- ]]
+}
+
+@test "sync with nothing new says so" {
+    # US-19.4
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    grid_cmd "$repo" sync
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Nothing to sync"* ]]
+}
+
+@test "sync refuses to go past nine tabs and says how to proceed" {
+    # US-19.5 / D13
+    local repo i; repo="$(make_repo)"
+    for i in 2 3 4 5 6 7 8; do git -C "$repo" worktree add -q -b "b$i" "$CODE/myrepo-$i"; done
+    run_grid "$repo"
+    git -C "$repo" worktree add -q -b x "$CODE/myrepo-x"
+    git -C "$repo" worktree add -q -b y "$CODE/myrepo-y"
+    grid_cmd "$repo" sync
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"dev grid prune"* ]]
+    [ "$(tmux list-windows -t '=dev-myrepo-grid:' | wc -l | tr -d ' ')" -eq 8 ]
+}
+
+@test "sync --dry-run shows what it would add and adds nothing" {
+    # US-16.2
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    git -C "$repo" worktree add -q -b b "$CODE/myrepo-b"
+    grid_cmd "$repo" sync --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"myrepo-b"* ]]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+@test "prune removes the tab of a removed worktree, and its popups" {
+    # US-20.2
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b gone "$CODE/myrepo-gone"
+    git -C "$repo" worktree add -q -b keep "$CODE/myrepo-keep"
+    run_grid "$repo"
+    local id; id="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    tmux new-session -d -s "term-$id" "sleep 300"
+    tmux set-option -t "=term-$id:" @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    tmux set-option -w -t "=term-$id:" @dev_ws_id "$id"
+    git -C "$repo" worktree remove "$CODE/myrepo-gone"
+    grid_cmd "$repo" prune
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n3 myrepo-keep' ]
+    ! tmux has-session -t "=term-$id" 2>/dev/null
+}
+
+@test "prune --dry-run removes nothing" {
+    # US-16.3
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b gone "$CODE/myrepo-gone"
+    run_grid "$repo"
+    git -C "$repo" worktree remove "$CODE/myrepo-gone"
+    grid_cmd "$repo" prune --dry-run
+    [[ "$output" == *"myrepo-gone"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-gone' ]
+}
+
+@test "dev grid kill removes the grid and its popups" {
+    # US-21.1
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tmux new-session -d -s keep
+    tmux new-session -d -s term-x "sleep 300"
+    tmux set-option -t '=term-x:' @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    grid_cmd "$repo" kill
+    [ "$status" -eq 0 ]
+    [ "$(tmux list-sessions -F '#{session_name}')" = "keep" ]
+}
+
+@test "dev grid kill --dry-run kills nothing" {
+    # US-16.4
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    grid_cmd "$repo" kill --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"dev-myrepo-grid"* ]]
+    tmux has-session -t '=dev-myrepo-grid'
+}
+
+@test "dev grid kill finds nothing to kill in an unstamped session" {
+    # US-21.2/21.3: never by name.
+    local repo; repo="$(make_repo)"
+    start_isolated_server dev-myrepo-grid
+    grid_cmd "$repo" kill
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"No grid for"* ]]
+    tmux has-session -t '=dev-myrepo-grid'
+}
