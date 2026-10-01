@@ -119,3 +119,15 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
     [ "$status" -ne 0 ]
     [[ "$output" == *"not a tmux key"* ]]
 }
+
+@test "a user's own popup binding with dev's flags is never taken for dev's" {
+    # The user's cheatsheet and worktree-manager keys use the same
+    # display-popup flags as dev's popups. Only dev's own text marks a
+    # binding as dev's, so moving a dev key never unbinds them.
+    tmux bind-key h run-shell 'tmux display-popup -w 90% -h 90% -b single -E "less -R ~/cheatsheet.md"'
+    tmux bind-key T run-shell 'tmux display-popup -w 90% -h 90% -b single -E "my-manager.sh"'
+    export DEV_KEY_AGENT=V
+    load_dev
+    [[ "$(prefix_key h)" == *"cheatsheet.md"* ]]
+    [[ "$(prefix_key T)" == *"my-manager.sh"* ]]
+}

@@ -1877,9 +1877,11 @@ _dev_plural() {
 
 # Text only dev's own bindings contain, the 2.3.x ones included: a key bound
 # to anything else is the user's, and dev leaves it alone.
+# Popup flags alone are not enough: a user's own popup keys can use the same
+# ones, so dev's popup scripts are recognised by their SESSION= line as well.
 _dev_is_dev_binding() {
-    [[ "$1" == *"display-popup -w 90% -h 90% -b single"* || "$1" == *"grid add --prompt"* ||
-       "$1" == *"grid remove --pane"* ||
+    [[ ( "$1" == *"display-popup -w 90% -h 90% -b single"* && "$1" == *'SESSION='* ) ||
+       "$1" == *"grid add --prompt"* || "$1" == *"grid remove --pane"* ||
        "$1" == *" __coordinator "* || "$1" == *" __overview "* ]]
 }
 
