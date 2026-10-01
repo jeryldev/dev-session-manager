@@ -1280,12 +1280,14 @@ dev() {
             esac
             ;;
 
+        # Keys run these through run-shell, and tmux shows a non-zero exit as
+        # "... returned 1" over the user's window; the message already said why.
         __coordinator)
-            _dev_coordinator "$2" "$3"
+            _dev_coordinator "$2" "$3" || true
             ;;
 
         __overview)
-            _dev_overview "$2" "$3"
+            _dev_overview "$2" "$3" || true
             ;;
 
         __in)
@@ -1642,7 +1644,11 @@ _dev_agent_command() {
         local base="${ai_cmd}${ai_args:+ $ai_args}"
         if [[ "$ai_cmd" == claude && -n "$sid" ]]; then
             # --resume first: --session-id refuses an id that already exists.
-            out+="$base --resume ${(qq)sid} || $base --session-id ${(qq)sid}"
+            # The first time there is nothing to resume, and claude says so in
+            # red above the new conversation; that is kept aside and shown only
+            # if starting the conversation fails too.
+            local err="${TMPDIR:-/tmp}/dev-resume-${sid}.err"
+            out+="$base --resume ${(qq)sid} 2>${(qq)err} || $base --session-id ${(qq)sid} || cat ${(qq)err} >&2"
         else
             out+="$base"
         fi

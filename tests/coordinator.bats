@@ -203,3 +203,16 @@ build_overview() {
     [[ "$output" == *claude* ]]
     [[ "$output" != *"$sid"* ]]
 }
+
+@test "prefix O and prefix S say why they did nothing, and exit cleanly" {
+    # A non-zero exit from a key's run-shell makes tmux dump "... returned 1"
+    # over the user's window; the display-message is the whole answer.
+    grid_with_feat
+    run zsh "$DEV_ZSH" __overview "$(pane_of '=dev-myrepo-grid:1')" "" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No workspace agents"* ]]
+    start_isolated_server dev-plain
+    run zsh "$DEV_ZSH" __coordinator "$(pane_of '=dev-plain:')" "" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No grid here"* ]]
+}

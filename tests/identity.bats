@@ -146,7 +146,7 @@ agent_command() {
     local sid; sid="$(tab_option 2 @dev_agent_sid)"
     agent_command "$(pane_of '=dev-myrepo-grid:2')"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"claude --enable-auto-mode --resume '$sid'"*"|| claude --enable-auto-mode --session-id '$sid'"* ]]
+    [[ "$output" == *"claude --enable-auto-mode --resume '$sid' 2>"*"|| claude --enable-auto-mode --session-id '$sid' || cat "* ]]
 }
 
 @test "the agent starts in its workspace, wherever the pane has wandered" {
