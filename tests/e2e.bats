@@ -67,7 +67,11 @@ attached() {
     grep -aq 'coordinator · dev-myrepo-grid' "$SCREEN"
     press "$PREFIX" d
     until_true '[ "$(attached coord-myrepo-grid)" = 0 ]'
-    press "$PREFIX" 2 "$PREFIX" S
+    # One key at a time, as a person presses them: tmux 3.4 drops the second
+    # binding when both arrive in one burst.
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    press "$PREFIX" S
     until_true '[ "$(attached coord-myrepo-grid)" = 1 ]'
     [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^coord-')" -eq 1 ]
 }

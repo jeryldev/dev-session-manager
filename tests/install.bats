@@ -194,7 +194,7 @@ run_install_decline_all() {
 # ─── README configuration matches the install path (US-6) ───
 
 readme_section() {
-    awk -v h="$1" '$0 == h {on=1; next} on && /^#{2,3} / {exit} on' "$PROJECT_ROOT/README.md"
+    awk -v h="$1" '$0 == h {on=1; next} on && /^###? / {exit} on' "$PROJECT_ROOT/README.md"
 }
 
 @test "README tells Homebrew users to export settings, with no source line" {

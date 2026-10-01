@@ -31,12 +31,16 @@ pane_of() { tmux display-message -p -t "$1" '#{pane_id}'; }
 # Press a popup key the way tmux does: run-shell expands the formats in the
 # context of the pane it targets. display-popup then fails for want of a
 # client, after the popup session exists.
+# The script comes from the function the binding is made with, not parsed
+# back out of list-keys: tmux versions escape that listing differently.
 press() {
-    local target="$1" key="$2"
-    local script; script="$(tmux list-keys -T prefix | awk -v k="$key" '$4 == k' | sed -E 's/^bind-key +-T prefix +[^ ]+ +run-shell +//')"
+    local target="$1" key="$2" script
+    case "$key" in
+        j) script="$(zsh -c 'source "$1" 2>/dev/null; _dev_popup_script term "${SHELL:-zsh}"' _ "$DEV_ZSH" </dev/null)" ;;
+        *) echo "press: no script for key $key" >&2; return 1 ;;
+    esac
     [ -n "$script" ]
-    # list-keys shows the command re-quoted for tmux; let tmux parse it back.
-    tmux run-shell -t "$target" "$(eval "printf '%s' $script")" 2>/dev/null || true
+    tmux run-shell -t "$target" "$script" 2>/dev/null || true
 }
 
 ai_sessions() { tmux list-sessions -F '#{session_name}' | grep '^ai-' | sort; }

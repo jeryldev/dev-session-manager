@@ -81,9 +81,16 @@ run_dev() {
     local decoy_sock
     decoy_sock="$(TMUX_TMPDIR="$decoy" tmux display-message -p '#{socket_path}')"
 
-    # Sabotage isolation the way a third broken mechanism would: point $TMUX at
-    # the decoy so it outranks TMUX_TMPDIR, then ask the guard to run.
-    run env TMUX="$decoy_sock,1,0" \
+    # Sabotage isolation so that every tmux call reaches the decoy whatever
+    # the environment says: a tmux on PATH pinned to the decoy's socket. (An
+    # earlier version pointed $TMUX at it, but isolate_tmux unsets $TMUX first,
+    # so it sabotaged nothing; it passed on macOS only because a long temp path
+    # broke the probe's socket.)
+    local real; real="$(command -v tmux)"
+    mkdir -p "$BATS_TEST_TMPDIR/pinned"
+    printf '#!/bin/sh\nexec "%s" -S "%s" "$@"\n' "$real" "$decoy_sock" > "$BATS_TEST_TMPDIR/pinned/tmux"
+    chmod +x "$BATS_TEST_TMPDIR/pinned/tmux"
+    run env PATH="$BATS_TEST_TMPDIR/pinned:$PATH" \
             BATS_TEST_TMPDIR="$BATS_TEST_TMPDIR/sabotage" \
             bash -c "mkdir -p \"\$BATS_TEST_TMPDIR\"; BATS_TEST_FILENAME='$BATS_TEST_FILENAME'; source '$PROJECT_ROOT/tests/test_helper.bash'; isolate_tmux"
     [ "$status" -ne 0 ]
