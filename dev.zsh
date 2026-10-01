@@ -28,6 +28,7 @@ typeset -gA _DEV_CFG_ENV=(
     worktree_create_cmd DEV_WORKTREE_CREATE_CMD
     agent_launch_cmd DEV_AGENT_LAUNCH_CMD
     watch_cmd DEV_WATCH_CMD
+    grid_cmd DEV_GRID_CMD
     key_agent DEV_KEY_AGENT
     key_term DEV_KEY_TERM
     key_kb DEV_KEY_KB
@@ -357,6 +358,124 @@ _dev_worktrees() {
     done
 }
 
+# The grid's workspaces as "path<TAB>label" lines, label possibly empty: from
+# grid_cmd if configured, else the repo's .dev-grid, else git. .dev-grid is
+# read as data and never executed (D7): a cloned repo must not be able to run
+# code through it. A failing grid_cmd is an error, never a fall back to the
+# other sources (D12) — a plausible grid from the wrong source is worse.
+_dev_workspace_source() {
+    local repo="$1" grid_cmd="$(_dev_cfg grid_cmd)" source="" out rc
+    if [[ -n "$grid_cmd" ]]; then
+        out="$(cd "$repo" && sh -c "$grid_cmd")"
+        rc=$?
+        if (( rc )); then
+            echo -e "${RED}Error: grid_cmd exited ${rc}: ${grid_cmd}${NC}" >&2
+            return 1
+        fi
+        if [[ -z "$out" ]]; then
+            echo -e "${RED}Error: grid_cmd printed no workspaces: ${grid_cmd}${NC}" >&2
+            return 1
+        fi
+        source="grid_cmd"
+    elif [[ -f "${repo}/.dev-grid" ]]; then
+        out="$(< "${repo}/.dev-grid")"
+        source=".dev-grid"
+    else
+        local wt
+        for wt in ${(f)"$(_dev_worktrees "$repo")"}; do
+            print -r -- "${wt}"$'\t'
+        done
+        return 0
+    fi
+    local line entry_path label skipped=0 used=0
+    for line in "${(@f)out}"; do
+        [[ -z "${line//[[:space:]]/}" || "$line" == \#* ]] && continue
+        entry_path="${line%%$'\t'*}"
+        [[ "$line" == *$'\t'* ]] && label="${line#*$'\t'}" || label=""
+        [[ "$entry_path" == /* ]] || entry_path="${repo}/${entry_path}"
+        if [[ ! -d "$entry_path" ]]; then
+            echo -e "${YELLOW}⚠ Skipping ${entry_path}: not a directory (${source})${NC}" >&2
+            (( skipped++ ))
+            continue
+        fi
+        print -r -- "${entry_path:A}"$'\t'"${label}"
+        (( used++ ))
+    done
+    if (( ! used )); then
+        echo -e "${RED}Error: no usable workspaces in ${source}: $(_dev_plural $skipped entry) skipped${NC}" >&2
+        return 1
+    fi
+}
+
+# The source's workspaces after --filter (a substring of the label or the
+# directory name) and --limit, as the grid was built with them.
+_dev_workspace_entries() {
+    local repo="$1" filter="$2" limit="$3" entries
+    entries="$(_dev_workspace_source "$repo")" || return 1
+    local -a all=(${(f)entries}) kept
+    local entry name
+    for entry in "${all[@]}"; do
+        name="${entry#*$'\t'}"
+        [[ -n "$name" ]] || name="${${entry%%$'\t'*}:t}"
+        [[ -z "$filter" || "$name" == *"$filter"* || "${${entry%%$'\t'*}:t}" == *"$filter"* ]] && kept+=("$entry")
+    done
+    if [[ -n "$filter" ]] && (( ! ${#kept} )); then
+        echo -e "${RED}Error: --filter '${filter}' matches none of the ${#all} workspaces${NC}" >&2
+        return 1
+    fi
+    [[ -n "$limit" ]] && kept=("${kept[@]:0:$limit}")
+    print -l -- "${kept[@]}"
+}
+
+# Over the cap on a terminal: the user picks up to nine, and the choice is
+# written to .dev-grid (kept out of git: it is one person's working set).
+_dev_grid_select() {
+    local repo="$1"
+    shift
+    local -a entries=("$@") picked
+    local i answer token from to n
+    echo -e "${YELLOW}${#entries} workspaces, but a grid holds 9 tabs (prefix 1-9):${NC}" >&2
+    for (( i = 1; i <= ${#entries}; i++ )); do
+        printf "  %2d) %s\n" "$i" "${${entries[i]%%$'\t'*}:t}" >&2
+    done
+    print -n "Pick up to 9 (e.g. 1 3 5-7): " >&2
+    read -r answer || return 1
+    for token in ${=answer}; do
+        if [[ "$token" =~ '^([0-9]+)-([0-9]+)$' ]]; then
+            from="${match[1]}" to="${match[2]}"
+        elif [[ "$token" =~ '^[0-9]+$' ]]; then
+            from="$token" to="$token"
+        else
+            echo -e "${RED}Error: '${token}' is not a number or a range${NC}" >&2
+            return 1
+        fi
+        for (( n = from; n <= to; n++ )); do
+            if (( n < 1 || n > ${#entries} )); then
+                echo -e "${RED}Error: ${n} is not in 1-${#entries}${NC}" >&2
+                return 1
+            fi
+            (( ${picked[(Ie)$n]} )) || picked+=("$n")
+        done
+    done
+    if (( ! ${#picked} || ${#picked} > 9 )); then
+        echo -e "${RED}Error: pick between 1 and 9 workspaces${NC}" >&2
+        return 1
+    fi
+    local entry label
+    : > "${repo}/.dev-grid" || return 1
+    for n in "${picked[@]}"; do
+        entry="${entries[n]}"
+        label="${entry#*$'\t'}"
+        print -r -- "${entry%%$'\t'*}${label:+$'\t'$label}" >> "${repo}/.dev-grid"
+        print -r -- "$entry"
+    done
+    local exclude="$(git -C "$repo" rev-parse --git-path info/exclude)"
+    [[ "$exclude" == /* ]] || exclude="${repo}/${exclude}"
+    mkdir -p "${exclude:h}"
+    grep -qx '.dev-grid' "$exclude" 2>/dev/null || print -r -- '.dev-grid' >> "$exclude"
+    echo -e "${GREEN}✓ Saved to ${repo}/.dev-grid${NC}" >&2
+}
+
 _dev_sha1() {
     print -rn -- "$1" | git hash-object --stdin
 }
@@ -381,12 +500,27 @@ _dev_stamp_workspace() {
 }
 
 _dev_grid_build() {
-    local repo session_name stamp
+    local repo session_name="" stamp filter="" limit=""
+    while (( $# )); do
+        case "$1" in
+            --filter) filter="$2"; shift 2 ;;
+            --limit) limit="$2"; shift 2 ;;
+            --session) session_name="$2"; shift 2 ;;
+            *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+        esac
+    done
+    if [[ -n "$limit" && ! "$limit" =~ '^[1-9]$' ]]; then
+        echo -e "${RED}Error: --limit takes 1-9 (prefix 1-9 reaches nine tabs), not '${limit}'${NC}"
+        return 1
+    fi
+    if [[ -n "$session_name" ]] && ! _dev_validate_name "$session_name"; then
+        return 1
+    fi
     if ! repo="$(_dev_repo_root)"; then
         echo -e "${RED}Error: not a git repository: ${PWD}${NC}"
         return 1
     fi
-    session_name="${DEV_SESSION_PREFIX}$(_dev_slug "${repo:t}")-grid"
+    [[ -n "$session_name" ]] || session_name="${DEV_SESSION_PREFIX}$(_dev_slug "${repo:t}")-grid"
     local display_name=$(_dev_display_name "$session_name")
 
     # The stamp, not the name, says a session is this repo's grid: `dev
@@ -398,6 +532,7 @@ _dev_grid_build() {
             # Report drift, never act on it: a removed worktree's tab may hold
             # unsaved work, and new ones are added only when asked.
             local -a added removed
+            local -A labels_of
             _dev_grid_drift "$repo" "$session_name"
             if (( ${#added} + ${#removed} )); then
                 echo -e "${YELLOW}⚠ $(_dev_plural ${#added} workspace) added, ${#removed} removed — run 'dev grid sync' / 'dev grid prune'${NC}"
@@ -410,6 +545,7 @@ _dev_grid_build() {
             echo -e "  Attach to it:   ${BLUE}dev attach ${display_name}${NC}"
             echo -e "  Or remove it:   ${BLUE}dev kill ${display_name}${NC}"
             echo -e "  Then re-run:    ${BLUE}dev grid${NC}"
+            echo -e "  Or build under another name: ${BLUE}dev grid --session <name>${NC}"
         else
             echo -e "${RED}✗ '${session_name}' is the grid of ${stamp}${NC}"
             echo -e "  Remove it with ${BLUE}dev kill ${display_name}${NC}, or rename this repo's directory"
@@ -417,27 +553,43 @@ _dev_grid_build() {
         return 1
     fi
 
-    local -a paths=(${(f)"$(_dev_worktrees "$repo")"})
-    if (( ${#paths} == 0 )); then
+    local entries
+    entries="$(_dev_workspace_entries "$repo" "$filter" "$limit")" || return 1
+    local -a picked=(${(f)entries})
+    if (( ${#picked} == 0 )); then
         echo -e "${RED}Error: no usable worktrees in ${repo}${NC}"
         return 1
     fi
     # prefix 1-9 reaches nine tabs. A tenth would quietly need prefix w, and
-    # building a subset nobody chose is worse than refusing.
-    if (( ${#paths} > 9 )); then
-        echo -e "${RED}Error: ${#paths} worktrees, but a grid holds 9 tabs (prefix 1-9)${NC}"
-        echo -e "${YELLOW}Remove some with 'git worktree remove', or wait for workspace selection${NC}"
-        return 1
+    # building a subset nobody chose is worse than refusing — so on a terminal
+    # the user chooses, and elsewhere it is an error.
+    if (( ${#picked} > 9 )); then
+        if [[ -t 0 ]]; then
+            entries="$(_dev_grid_select "$repo" "${picked[@]}")" || return 1
+            picked=(${(f)entries})
+        else
+            echo -e "${RED}Error: ${#picked} worktrees, but a grid holds 9 tabs (prefix 1-9)${NC}"
+            echo -e "${YELLOW}Run 'dev grid' on a terminal to choose, or use --filter / --limit / a .dev-grid file${NC}"
+            return 1
+        fi
     fi
+    local -a paths=() labels=()
+    local entry
+    for entry in "${picked[@]}"; do
+        paths+=("${entry%%$'\t'*}")
+        labels+=("${${entry#*$'\t'}:-${${entry%%$'\t'*}:t}}")
+    done
 
     echo -e "${GREEN}Creating grid: ${display_name}${NC}"
-    tmux new-session -d -s "$session_name" -n "${paths[1]:t}" -c "${paths[1]}"
+    tmux new-session -d -s "$session_name" -n "${labels[1]}" -c "${paths[1]}"
     _dev_number_from_one "$session_name"
     tmux set-option -t "=${session_name}:" @dev_grid "$repo"
+    [[ -n "$filter" ]] && tmux set-option -t "=${session_name}:" @dev_grid_filter "$filter"
+    [[ -n "$limit" ]] && tmux set-option -t "=${session_name}:" @dev_grid_limit "$limit"
     _dev_stamp_workspace "=${session_name}:1" "${paths[1]}" "$repo"
     local i
     for (( i = 2; i <= ${#paths}; i++ )); do
-        tmux new-window -t "=${session_name}:${i}" -n "${paths[i]:t}" -c "${paths[i]}"
+        tmux new-window -t "=${session_name}:${i}" -n "${labels[i]}" -c "${paths[i]}"
         _dev_stamp_workspace "=${session_name}:${i}" "${paths[i]}" "$repo"
     done
     tmux select-window -t "=${session_name}:1"
@@ -612,16 +764,23 @@ _dev_grid_free_indexes() {
 }
 
 _dev_grid_open_tab() {
-    local grid_session="$1" index="$2" wt_path="$3" repo="$4"
-    tmux new-window -d -t "=${grid_session}:${index}" -n "${wt_path:t}" -c "$wt_path"
+    local grid_session="$1" index="$2" wt_path="$3" repo="$4" label="${5:-${3:t}}"
+    tmux new-window -d -t "=${grid_session}:${index}" -n "$label" -c "$wt_path"
     _dev_stamp_workspace "=${grid_session}:${index}" "$wt_path" "$repo"
 }
 
 # Worktrees with no tab (into `added`) and tabs whose worktree is gone (into
 # `removed`, as "index|path"), for the caller's arrays.
 _dev_grid_drift() {
-    local repo="$1" grid_session="$2" index workspace
-    local -a worktrees=(${(f)"$(_dev_worktrees "$repo" 2>/dev/null)"}) tabs=()
+    local repo="$1" grid_session="$2" index workspace entry
+    local filter="$(tmux show-options -t "=${grid_session}:" -qv @dev_grid_filter)"
+    local limit="$(tmux show-options -t "=${grid_session}:" -qv @dev_grid_limit)"
+    local -a worktrees=() tabs=()
+    labels_of=()
+    for entry in ${(f)"$(_dev_workspace_entries "$repo" "$filter" "$limit" 2>/dev/null)"}; do
+        worktrees+=("${entry%%$'\t'*}")
+        labels_of[${entry%%$'\t'*}]="${entry#*$'\t'}"
+    done
     while IFS='|' read -r index workspace; do
         [[ -n "$workspace" ]] || continue
         tabs+=("$workspace")
@@ -637,6 +796,7 @@ _dev_grid_sync() {
     [[ "$1" == "--dry-run" ]] && dry_run=1
     _dev_grid_locate || return 1
     local -a added removed free=(${(f)"$(_dev_grid_free_indexes "$grid_session")"})
+    local -A labels_of
     _dev_grid_drift "$repo" "$grid_session"
     if (( ! ${#added} )); then
         echo -e "${GREEN}✓ Nothing to sync${NC}"
@@ -652,7 +812,7 @@ _dev_grid_sync() {
         if (( dry_run )); then
             echo "  would add ${added[i]:t} as tab ${free[i]}"
         else
-            _dev_grid_open_tab "$grid_session" "${free[i]}" "${added[i]}" "$repo"
+            _dev_grid_open_tab "$grid_session" "${free[i]}" "${added[i]}" "$repo" "${labels_of[${added[i]}]}"
             echo -e "${GREEN}✓ ${added[i]:t} is tab ${free[i]}${NC}"
         fi
     done
@@ -663,6 +823,7 @@ _dev_grid_prune() {
     [[ "$1" == "--dry-run" ]] && dry_run=1
     _dev_grid_locate || return 1
     local -a added removed
+    local -A labels_of
     _dev_grid_drift "$repo" "$grid_session"
     if (( ! ${#removed} )); then
         echo -e "${GREEN}✓ Nothing to prune${NC}"
@@ -774,6 +935,7 @@ dev() {
             echo -e "  ${BLUE}dev agent start <t>${NC} Start tab t's agent (the one prefix a opens)"
             echo -e "  ${BLUE}dev agent send <t>${NC}  Brief tab t's agent and confirm it arrived"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
+            echo -e "                     (--filter <text>  --limit <1-9>  --session <name>)"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
             echo -e "  ${BLUE}dev grid sync${NC}      Add tabs for new worktrees (--dry-run)"
@@ -926,7 +1088,7 @@ dev() {
                 return 1
             fi
             case "$2" in
-                "") _dev_grid_build ;;
+                ""|--*) shift; _dev_grid_build "$@" ;;
                 status) _dev_grid_status ;;
                 sync) _dev_grid_sync "$3" ;;
                 prune) _dev_grid_prune "$3" ;;

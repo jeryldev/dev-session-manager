@@ -524,3 +524,161 @@ grid_cmd() {
     [[ "$output" == *"No grid for"* ]]
     tmux has-session -t '=dev-myrepo-grid'
 }
+
+# ─── Where the workspaces come from (US-22, D7, D11, D12) ───
+
+@test "a .dev-grid file chooses the workspaces and their labels" {
+    # US-22.5/22.8/22.9/22.11
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    git -C "$repo" worktree add -q -b b "$CODE/myrepo-b"
+    printf '# my week\n\n../myrepo-b\tbugfix\n%s\n' "$repo" > "$repo/.dev-grid"
+    run_grid "$repo"
+    [ "$(windows dev-myrepo-grid)" = $'1 bugfix\n2 myrepo' ]
+}
+
+@test "a .dev-grid file is read, never run" {
+    # US-22.7 / D7: a cloned repo must not be able to run code on dev grid.
+    local repo; repo="$(make_repo)"
+    printf '#!/bin/sh\ntouch "%s/pwned"\necho %s\n' "$BATS_TEST_TMPDIR" "$repo" > "$repo/.dev-grid"
+    chmod +x "$repo/.dev-grid"
+    run_grid "$repo"
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}
+
+@test "a .dev-grid line naming a missing directory is skipped with a warning" {
+    # US-22.10
+    local repo; repo="$(make_repo)"
+    printf '%s\n%s\n' "$repo" "$CODE/nowhere" > "$repo/.dev-grid"
+    run_grid "$repo"
+    [[ "$output" == *"nowhere"* ]]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+@test "a .dev-grid with nothing usable is an error that says why" {
+    # US-22.12 / D11
+    local repo; repo="$(make_repo)"
+    printf '%s\n' "$CODE/nowhere" > "$repo/.dev-grid"
+    run_grid "$repo"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"1 entry"*"skipped"* ]]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}
+
+@test "DEV_GRID_CMD's output is the workspace list" {
+    # US-22.1
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    export DEV_GRID_CMD="printf '%s\tslot\n' '$CODE/myrepo-a'"
+    run_grid "$repo"
+    [ "$(windows dev-myrepo-grid)" = "1 slot" ]
+}
+
+@test "a failing DEV_GRID_CMD is an error, never a fall back to git" {
+    # US-22.2/22.4 / D12
+    local repo; repo="$(make_repo)"
+    export DEV_GRID_CMD="echo broken >&2; exit 4"
+    run_grid "$repo"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"exit 4"* ]]
+    [[ "$output" == *"broken"* ]]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}
+
+@test "a DEV_GRID_CMD that prints nothing is an error too" {
+    # US-22.3
+    local repo; repo="$(make_repo)"
+    export DEV_GRID_CMD="true"
+    run_grid "$repo"
+    [ "$status" -ne 0 ]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}
+
+# ─── --filter, --limit, selection, --session (US-17, US-15.5, D10, D15) ───
+
+many_worktrees() {
+    REPO="$(make_repo)"
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10 11; do git -C "$REPO" worktree add -q -b "io$i" "$CODE/myrepo-io$i"; done
+}
+
+@test "--filter keeps the matching workspaces" {
+    # US-17.3
+    many_worktrees
+    run_grid "$REPO" --filter io1
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo-io1\n2 myrepo-io10\n3 myrepo-io11' ]
+}
+
+@test "--filter, then --limit, then the cap" {
+    # US-17.4/17.5
+    many_worktrees
+    # git lists worktrees by name: io1, io10, io11, io2, ...
+    run_grid "$REPO" --filter io --limit 2
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo-io1\n2 myrepo-io10' ]
+}
+
+@test "--limit outside 1-9 is an error, not a clamp" {
+    # US-17.6/17.7
+    local repo; repo="$(make_repo)"
+    run_grid "$repo" --limit 10
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--limit takes 1-9"* ]]
+    run_grid "$repo" --limit 0
+    [ "$status" -ne 0 ]
+    run_grid "$repo" --limit x
+    [ "$status" -ne 0 ]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}
+
+@test "--filter matching nothing names the filter and what there is" {
+    # US-17.8
+    many_worktrees
+    run_grid "$REPO" --filter zzz
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"zzz"*"12 workspaces"* ]]
+}
+
+@test "sync keeps a filtered grid's filter" {
+    many_worktrees
+    run_grid "$REPO" --filter io1
+    git -C "$REPO" worktree add -q -b io12 "$CODE/myrepo-io12"
+    git -C "$REPO" worktree add -q -b other "$CODE/myrepo-other"
+    grid_cmd "$REPO" sync
+    [ "$(windows dev-myrepo-grid | tail -1)" = "4 myrepo-io12" ]
+}
+
+@test "over nine on a terminal asks which, writes .dev-grid and keeps it out of git" {
+    # US-17.1 (a TTY via the pty helper)
+    many_worktrees
+    local log="$BATS_TEST_TMPDIR/sel.log" keys="$BATS_TEST_TMPDIR/sel.keys"
+    mkfifo "$keys"
+    python3 "$PROJECT_ROOT/tests/pty_client.py" "$keys" "$log" 120 40 -- \
+        zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid' _ "$REPO" "$DEV_ZSH" >/dev/null 2>&1 3>&- &
+    local client=$! i
+    for i in $(seq 1 30); do grep -aq 'Pick up to 9' "$log" 2>/dev/null && break; sleep 0.2; done
+    printf '2 4-5\r' > "$keys"
+    for i in $(seq 1 30); do tmux has-session -t '=dev-myrepo-grid' 2>/dev/null && break; sleep 0.2; done
+    kill "$client" 2>/dev/null || true
+    # Picks 2, 4 and 5 of the list as git orders it: myrepo, io1, io10, io11, io2, ...
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo-io1\n2 myrepo-io11\n3 myrepo-io2' ]
+    [ -f "$REPO/.dev-grid" ]
+    grep -qx '.dev-grid' "$REPO/.git/info/exclude"
+}
+
+@test "--session builds under another name, and verbs still find it" {
+    # US-15.5/15.6 / D15
+    local repo; repo="$(make_repo)"
+    run_grid "$repo" --session mine
+    tmux has-session -t '=mine'
+    grid_cmd "$repo" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"myrepo"* ]]
+}
+
+@test "the refusal names --session as a way out" {
+    # US-15.2
+    local repo; repo="$(make_repo)"
+    start_isolated_server dev-myrepo-grid
+    run_grid "$repo"
+    [[ "$output" == *"--session"* ]]
+}

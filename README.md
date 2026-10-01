@@ -120,6 +120,22 @@ is to brief and check on the tab agents with `dev agent ...` (it finds its grid 
 `prefix + O` opens a read-only **overview** of every running tab agent, tiled; closing it closes it,
 so the agents go back to their full size.
 
+### Choosing the workspaces
+
+By default the grid has a tab for every git worktree. A grid holds 9 tabs; with more, `dev grid` on a
+terminal asks which to open and saves the choice in `.dev-grid` (added to `.git/info/exclude`, so it
+stays yours). You can also:
+
+```bash
+dev grid --filter io --limit 4     # matching workspaces, then the first 4
+dev grid --session mygrid          # build under another session name
+```
+
+`.dev-grid` lists one workspace per line, `path` or `path<TAB>label`; relative paths are from the repo
+root, and `#` lines are comments. It is only ever read, never run. To compute the list instead, set
+`grid_cmd` (`DEV_GRID_CMD`) to a command that prints those lines; if it fails, `dev grid` stops rather
+than falling back to git.
+
 `prefix + N` does the same as `dev grid add`, asking for the branch in a small popup. A grid holds up to
 9 tabs, so `prefix + 1`-`9` always reaches them.
 
@@ -305,6 +321,7 @@ variable overrides the file for as long as it is set.
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
 | `watch_cmd` | `DEV_WATCH_CMD` | unset | Run at each `dev agent watch` heartbeat; its output becomes events |
+| `grid_cmd` | `DEV_GRID_CMD` | unset | Print the grid's workspaces (`path<TAB>label` lines) instead of `.dev-grid` or git |
 
 To use environment variables instead, where you set them depends on how you installed.
 
