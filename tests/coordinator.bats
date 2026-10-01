@@ -186,3 +186,16 @@ build_overview() {
     run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid kill' _ "$REPO" "$DEV_ZSH" </dev/null
     [ -z "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^overview-')" ]
 }
+
+@test "prefix a inside the coordinator does not open its conversation twice" {
+    grid_with_feat
+    press_coordinator "$(pane_of '=dev-myrepo-grid:1')"
+    local name sid; name="$(coordinators | cut -d'|' -f2)"
+    sid="$(tmux show-options -w -t "=${name}:" -v @dev_agent_sid)"
+    tmux new-session -d -s "ai-${name}-claude"
+    tmux set-option -w -t "=ai-${name}-claude:" @dev_origin "$(pane_of "=${name}:")"
+    # Without the fake launcher, so the claude command (and any sid) shows.
+    run env DEV_AGENT_LAUNCH_CMD= zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$(pane_of "=ai-${name}-claude:")" </dev/null
+    [[ "$output" == *claude* ]]
+    [[ "$output" != *"$sid"* ]]
+}

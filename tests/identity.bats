@@ -191,7 +191,7 @@ agent_command() {
     touch "$HOME/key"
     export DEV_SSH_KEY="$HOME/key"
     agent_command "$(pane_of '=dev-plain:')"
-    [[ "$output" == "ssh-add '$HOME/key' 2>/dev/null; "* ]]
+    [[ "$output" == "ssh-add '$HOME/key' "* ]]
 }
 
 @test "a configured ssh key that does not exist warns and is skipped" {
@@ -237,4 +237,37 @@ agent_command() {
     local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "a"')"
     [[ "$binding" == *"__agent"* ]]
     [[ "$binding" != *"--enable-auto-mode"* ]]
+}
+
+# ─── Review fixes (2026-10-01) ───
+
+@test "a directory name cannot run code through a popup key" {
+    # The popup script handed #{pane_current_path} to sh in double quotes, so
+    # a repo could name a directory that runs a command (via .dev-grid).
+    local repo; repo="$(make_repo)"
+    local evil="$CODE/x\$(true>$BATS_TEST_TMPDIR/pwned)"
+    mkdir -p "$evil"
+    printf '%s\n%s\n' "$repo" "$evil" > "$repo/.dev-grid"
+    run_grid "$repo"
+    press '=dev-myrepo-grid:2' j
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+    [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^term-')" -eq 1 ]
+}
+
+@test "an agent popup whose tab pane is gone still finds its workspace" {
+    grid_with_feat
+    local ws sid; ws="$(tab_option 2 @dev_ws_id)"; sid="$(tab_option 2 @dev_agent_sid)"
+    tmux new-session -d -s "term-${ws}"
+    tmux set-option -w -t "=term-${ws}:" @dev_ws_id "$ws"
+    tmux set-option -w -t "=term-${ws}:" @dev_origin '%999'
+    agent_command "$(pane_of "=term-${ws}:")"
+    [[ "$output" == "cd '$CODE/myrepo-feat' || exit 1; "*"--resume '$sid'"* ]]
+}
+
+@test "a failing ssh-add is reported, not hidden" {
+    start_isolated_server dev-plain
+    touch "$HOME/key"
+    export DEV_SSH_KEY="$HOME/key"
+    agent_command "$(pane_of '=dev-plain:')"
+    [[ "$output" == "ssh-add '$HOME/key' || echo "* ]]
 }

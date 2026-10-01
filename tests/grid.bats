@@ -682,3 +682,115 @@ many_worktrees() {
     run_grid "$repo"
     [[ "$output" == *"--session"* ]]
 }
+
+# ─── Review fixes (2026-10-01): drift, prune and lookups ───
+
+@test "prune never closes a tab whose worktree still exists, filtered or not" {
+    # A tab outside --filter / --limit is not a removed worktree.
+    many_worktrees
+    run_grid "$REPO" --filter io1
+    git -C "$REPO" worktree add -q -b feat "$CODE/myrepo-feat"
+    grid_cmd "$REPO" add feat
+    grid_cmd "$REPO" prune --dry-run
+    [[ "$output" == *"Nothing to prune"* ]]
+}
+
+@test "a failing workspace source stops sync and prune instead of emptying the grid" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    run_grid "$repo"
+    export DEV_GRID_CMD=false
+    grid_cmd "$repo" prune
+    [ "$status" -ne 0 ]
+    grid_cmd "$repo" sync
+    [ "$status" -ne 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-a' ]
+    run_grid "$repo"
+    [[ "$output" != *"removed — run"* ]]
+    [[ "$output" == *"Could not read the workspace list"* ]]
+}
+
+@test "prune closes the right tabs when tmux renumbers windows" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    git -C "$repo" worktree add -q -b b "$CODE/myrepo-b"
+    git -C "$repo" worktree add -q -b keep "$CODE/myrepo-keep"
+    run_grid "$repo"
+    tmux set-option -g renumber-windows on
+    git -C "$repo" worktree remove "$CODE/myrepo-a"
+    git -C "$repo" worktree remove "$CODE/myrepo-b"
+    grid_cmd "$repo" prune
+    [ "$status" -eq 0 ]
+    [ "$(tmux list-windows -t '=dev-myrepo-grid:' -F '#{window_name}')" = $'myrepo\nmyrepo-keep' ]
+}
+
+@test "an option without its value is an error, not a hang" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo" --limit
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--limit needs a value"* ]]
+}
+
+@test "a second grid for the same repo is refused" {
+    # D15: ambiguity is reported, never guessed.
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    run_grid "$repo" --session mine
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already"*"dev-myrepo-grid"* ]]
+    ! tmux has-session -t '=mine' 2>/dev/null
+}
+
+@test "two sessions stamped for one repo make verbs refuse and list both" {
+    # US-15.7
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tmux new-session -d -s other
+    tmux set-option -t '=other:' @dev_grid "$repo"
+    grid_cmd "$repo" kill
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"dev-myrepo-grid"*"other"* ]]
+    tmux has-session -t '=dev-myrepo-grid'
+}
+
+@test "a relative path from the create command is read from the repo root" {
+    local repo; repo="$(make_repo)"
+    # Run from a worktree two levels down, where ../myrepo-feat2 means
+    # something else: the command ran in the repo root, so that is the base.
+    git -C "$repo" worktree add -q -b deep "$CODE/nested/deep/wt"
+    run_grid "$repo"
+    git -C "$repo" worktree add -q -b feat2 "$CODE/myrepo-feat2"
+    export DEV_WORKTREE_CREATE_CMD="echo ../myrepo-feat2"
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid add other' _ "$CODE/nested/deep/wt" "$DEV_ZSH" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$(tmux show-options -w -t '=dev-myrepo-grid:3' -v @dev_workspace)" = "$CODE/myrepo-feat2" ]
+}
+
+@test "a # in a worktree path or label is taken literally, not as a tmux format" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b hash "$CODE/fix#Sx"
+    run_grid "$repo"
+    [ "$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{window_name}')" = 'fix#Sx' ]
+    [ "$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_current_path}')" = "$CODE/fix#Sx" ]
+}
+
+@test "a | in a label does not shift the columns" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    printf '%s\tapi|v2\n' "$CODE/myrepo-a" > "$repo/.dev-grid"
+    run_grid "$repo"
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent status --json' _ "$repo" "$DEV_ZSH" </dev/null
+    printf '%s\n' "$output" | python3 -c '
+import json, sys
+row = json.loads(sys.stdin.readline())
+assert row["label"] == "api|v2" and row["branch"] == "a" and row["path"].endswith("myrepo-a"), row'
+}
+
+@test "a workspace git cannot read is reported, never shown as clean" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    run_grid "$repo"
+    rm -rf "$CODE/myrepo-a"
+    grid_cmd "$repo" status
+    [[ "$output" =~ 2\ +myrepo-a\ +-\ +missing ]]
+}

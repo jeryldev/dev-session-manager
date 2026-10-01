@@ -317,3 +317,70 @@ swallowing_agent() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"Not confirmed"* ]]
 }
+
+# ─── Review fixes (2026-10-01) ───
+
+@test "a second brief that never arrives is not confirmed by the first" {
+    # Every --file pointer starts with the same words; the old receipt found
+    # the first brief's line and called the second delivered.
+    grid_with_feat
+    export DEV_AGENT_LAUNCH_CMD="stty -echo; printf '────\n❯ '; IFS= read -r l; printf '\n❯ %s\n────\n❯ ' \"\$l\"; exec cat >/dev/null"
+    agent_cmd "$REPO" start 2
+    printf 'one\n' > "$BATS_TEST_TMPDIR/one.md"; printf 'two\n' > "$BATS_TEST_TMPDIR/two.md"
+    agent_cmd "$REPO" send 2 --file "$BATS_TEST_TMPDIR/one.md"
+    [ "$status" -eq 0 ]
+    agent_cmd "$REPO" send 2 --timeout 1 --file "$BATS_TEST_TMPDIR/two.md"
+    [ "$status" -ne 0 ]
+}
+
+@test "start --brief with a brief it cannot read fails before starting anything" {
+    grid_with_feat
+    echoing_agent
+    agent_cmd "$REPO" start 2 --brief "$BATS_TEST_TMPDIR/nope.md"
+    [ "$status" -ne 0 ]
+    [ -z "$(agent_sessions)" ]
+}
+
+@test "start --brief reports a brief that was not delivered" {
+    grid_with_feat
+    swallowing_agent
+    printf 'x\n' > "$BATS_TEST_TMPDIR/b.md"
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent start 2 --brief "$3"' _ "$REPO" "$DEV_ZSH" "$BATS_TEST_TMPDIR/b.md" </dev/null
+    [ "$status" -ne 0 ]
+}
+
+@test "send types into the agent's pane, even after the session was split" {
+    grid_with_feat
+    echoing_agent
+    agent_cmd "$REPO" start 2
+    local session; session="$(agent_sessions | cut -d'|' -f1)"
+    tmux split-window -t "=${session}:" 'exec sleep 600'
+    agent_cmd "$REPO" send 2 "hello agent"
+    [ "$status" -eq 0 ]
+    [[ "$(tmux capture-pane -p -t "=${session}:.0")" == *"❯ hello agent"* ]]
+}
+
+@test "an agent whose launch fails leaves its error on screen and start reports it" {
+    grid_with_feat
+    export DEV_AGENT_LAUNCH_CMD="echo cannot authenticate; exit 3"
+    agent_cmd "$REPO" start 2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"exited"* ]]
+}
+
+@test "a waiting question is reported without its indent" {
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_screen_question < "$2"' _ "$DEV_ZSH" "$FIXTURES/claude-2.1.286-waiting-trust.txt" </dev/null
+    [[ "$output" == "Quick safety check"* ]]
+}
+
+@test "the same brief sent twice is confirmed only when it arrives again" {
+    # Same pointer line both times: only a new occurrence on screen counts.
+    grid_with_feat
+    export DEV_AGENT_LAUNCH_CMD="stty -echo; printf '────\n❯ '; IFS= read -r l; printf '\n❯ %s\n────\n❯ ' \"\$l\"; exec cat >/dev/null"
+    agent_cmd "$REPO" start 2
+    printf 'one\n' > "$BATS_TEST_TMPDIR/one.md"
+    agent_cmd "$REPO" send 2 --file "$BATS_TEST_TMPDIR/one.md"
+    [ "$status" -eq 0 ]
+    agent_cmd "$REPO" send 2 --timeout 1 --file "$BATS_TEST_TMPDIR/one.md"
+    [ "$status" -ne 0 ]
+}

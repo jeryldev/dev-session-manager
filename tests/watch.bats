@@ -165,3 +165,17 @@ PY
     finish
     [ "$(tmux list-sessions -F '#{session_name}' | sort)" = "$before" ]
 }
+
+@test "a tab added during the watch is not a none → none change" {
+    start_agent_showing claude-2.1.286-idle.txt
+    watch_for --for 4
+    sleep 1.5
+    zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid add later' _ "$REPO" "$DEV_ZSH" </dev/null >/dev/null
+    finish
+    ! grep -q 'none → none' "$OUT"
+}
+
+@test "a watch leaves no traps behind in the shell that ran it" {
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent watch --for 1 --interval 1 >/dev/null; trap' _ "$REPO" "$DEV_ZSH" </dev/null
+    [[ "$output" != *INT* && "$output" != *TERM* ]]
+}

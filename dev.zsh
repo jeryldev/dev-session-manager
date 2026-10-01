@@ -329,6 +329,41 @@ _dev_window_names() {
     print -l -- "${names[@]}"
 }
 
+# For options that take a value: `shift 2` without one fails without
+# shifting in zsh, and the option loop would never end.
+_dev_need_value() {
+    (( $2 >= 2 )) && return 0
+    echo -e "${RED}Error: $1 needs a value${NC}" >&2
+    return 1
+}
+
+# A value tmux would otherwise expand as a format (-n, -c, -T, display-message
+# text): `#S` in a path became the session name and the tab opened in $HOME.
+_dev_tmux_literal() {
+    print -r -- "${1//\#/##}"
+}
+
+# Sets branch and changes in the caller for a workspace directory. A missing
+# directory or a git that fails says so: "clean" would make a broken
+# workspace look safe to remove.
+_dev_workspace_git() {
+    local workspace="$1" porcelain
+    if [[ ! -d "$workspace" ]]; then
+        branch="-" changes="missing"
+        return 1
+    fi
+    if ! porcelain="$(git -C "$workspace" status --porcelain 2>/dev/null)"; then
+        branch="-" changes="git error"
+        return 1
+    fi
+    branch="$(git -C "$workspace" branch --show-current 2>/dev/null)"
+    [[ -n "$branch" ]] || branch="(detached $(git -C "$workspace" rev-parse --short HEAD 2>/dev/null))"
+    # An array: ${#${(f)x}} of a single line is its length in characters.
+    local -a lines=(${(f)porcelain})
+    changes=${#lines}
+    return 0
+}
+
 _dev_slug() {
     print -r -- "${1//[^a-zA-Z0-9_-]/-}"
 }
@@ -516,9 +551,9 @@ _dev_grid_build() {
     local repo session_name="" stamp filter="" limit=""
     while (( $# )); do
         case "$1" in
-            --filter) filter="$2"; shift 2 ;;
-            --limit) limit="$2"; shift 2 ;;
-            --session) session_name="$2"; shift 2 ;;
+            --filter) _dev_need_value "$1" $# || return 1; filter="$2"; shift 2 ;;
+            --limit) _dev_need_value "$1" $# || return 1; limit="$2"; shift 2 ;;
+            --session) _dev_need_value "$1" $# || return 1; session_name="$2"; shift 2 ;;
             *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
         esac
     done
@@ -533,6 +568,21 @@ _dev_grid_build() {
         echo -e "${RED}Error: not a git repository: ${PWD}${NC}"
         return 1
     fi
+    # A repo has one grid. Found by stamp, under whatever name it was built:
+    # `dev` reaches a `--session` grid too, and a second one is refused.
+    local -a stamped=(${(f)"$(_dev_grid_sessions "$repo")"})
+    if (( ${#stamped} > 1 )); then
+        _dev_grid_ambiguous "$repo" "${stamped[@]}"
+        return 1
+    fi
+    if (( ${#stamped} == 1 )); then
+        if [[ -n "$session_name" && "$session_name" != "${stamped[1]}" ]]; then
+            echo -e "${RED}✗ ${repo} already has a grid: ${stamped[1]}${NC}"
+            echo -e "  Open it with ${BLUE}dev grid${NC}, or close it first with ${BLUE}dev grid kill${NC}"
+            return 1
+        fi
+        session_name="${stamped[1]}"
+    fi
     [[ -n "$session_name" ]] || session_name="${DEV_SESSION_PREFIX}$(_dev_slug "${repo:t}")-grid"
     local display_name=$(_dev_display_name "$session_name")
 
@@ -546,8 +596,9 @@ _dev_grid_build() {
             # unsaved work, and new ones are added only when asked.
             local -a added removed
             local -A labels_of
-            _dev_grid_drift "$repo" "$session_name"
-            if (( ${#added} + ${#removed} )); then
+            if ! _dev_grid_drift "$repo" "$session_name" 2>/dev/null; then
+                echo -e "${YELLOW}⚠ Could not read the workspace list, so new or removed worktrees were not checked${NC}"
+            elif (( ${#added} + ${#removed} )); then
                 echo -e "${YELLOW}⚠ $(_dev_plural ${#added} workspace) added, ${#removed} removed — run 'dev grid sync' / 'dev grid prune'${NC}"
             fi
             _dev_attach_session "$session_name" "Attaching to grid: ${display_name}"
@@ -594,7 +645,7 @@ _dev_grid_build() {
     done
 
     echo -e "${GREEN}Creating grid: ${display_name}${NC}"
-    tmux new-session -d -s "$session_name" -n "${labels[1]}" -c "${paths[1]}"
+    tmux new-session -d -s "$session_name" -n "$(_dev_tmux_literal "${labels[1]}")" -c "$(_dev_tmux_literal "${paths[1]}")"
     _dev_number_from_one "$session_name"
     tmux set-option -t "=${session_name}:" @dev_grid "$repo"
     [[ -n "$filter" ]] && tmux set-option -t "=${session_name}:" @dev_grid_filter "$filter"
@@ -602,20 +653,37 @@ _dev_grid_build() {
     _dev_stamp_workspace "=${session_name}:1" "${paths[1]}" "$repo"
     local i
     for (( i = 2; i <= ${#paths}; i++ )); do
-        tmux new-window -t "=${session_name}:${i}" -n "${labels[i]}" -c "${paths[i]}"
+        tmux new-window -t "=${session_name}:${i}" -n "$(_dev_tmux_literal "${labels[i]}")" -c "$(_dev_tmux_literal "${paths[i]}")"
         _dev_stamp_workspace "=${session_name}:${i}" "${paths[i]}" "$repo"
     done
     tmux select-window -t "=${session_name}:1"
     _dev_attach_session "$session_name" "Created $(_dev_plural ${#paths} tab), one per worktree"
 }
 
-# The grid session stamped for a repo, found by its stamp, never its name.
-_dev_grid_session() {
-    local repo="$1" stamp name
-    tmux list-sessions -F '#{@dev_grid}|#{session_name}' 2>/dev/null |
-        while IFS='|' read -r stamp name; do
-            [[ "$stamp" == "$repo" ]] && { print -r -- "$name"; return; }
+# Every session stamped as a repo's grid — found by stamp, never by name.
+_dev_grid_sessions() {
+    local repo="$1" name stamp
+    tmux list-sessions -F "#{session_name}"$'\x1f''#{@dev_grid}' 2>/dev/null |
+        while IFS=$'\x1f' read -r name stamp; do
+            [[ "$stamp" == "$repo" ]] && print -r -- "$name"
         done
+}
+
+_dev_grid_ambiguous() {
+    local repo="$1"
+    shift
+    echo -e "${RED}✗ More than one session is stamped as the grid of ${repo}: ${(j:, :)@}${NC}" >&2
+    echo -e "${YELLOW}Close the extra one with 'dev kill <name>'${NC}" >&2
+}
+
+# The repo's one grid, or nothing; two is an error, never a guess (D15).
+_dev_grid_session() {
+    local -a stamped=(${(f)"$(_dev_grid_sessions "$1")"})
+    if (( ${#stamped} > 1 )); then
+        _dev_grid_ambiguous "$1" "${stamped[@]}"
+        return 1
+    fi
+    print -r -- "${stamped[1]}"
 }
 
 # Sets repo and grid_session in the caller, or explains why it cannot.
@@ -624,7 +692,7 @@ _dev_grid_locate() {
         echo -e "${RED}Error: not a git repository: ${PWD}${NC}"
         return 1
     fi
-    grid_session="$(_dev_grid_session "$repo")"
+    grid_session="$(_dev_grid_session "$repo")" || return 1
     if [[ -z "$grid_session" ]]; then
         echo -e "${RED}No grid for ${repo}${NC}"
         echo -e "${YELLOW}Run 'dev grid' to build one${NC}"
@@ -635,24 +703,28 @@ _dev_grid_locate() {
 _dev_grid_status() {
     local repo grid_session
     _dev_grid_locate || return 1
-    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{@dev_workspace}|#{window_name}')"})
-    local index workspace name branch changes row width=9
+    local us=$'\x1f'
+    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F "#{window_index}${us}#{@dev_workspace}${us}#{window_name}")"})
+    local index workspace name branch changes row width=9 bwidth=6
     for row in "${rows[@]}"; do
-        name="${row#*|*|}"
+        name="${row#*${us}*${us}}"
         (( ${#name} > width )) && width=${#name}
     done
-    printf "  %-3s %-${width}s  %-28s %s\n" "#" "workspace" "branch" "state"
+    local -a out_rows
     for row in "${rows[@]}"; do
-        IFS='|' read -r index workspace name <<< "$row"
+        IFS="$us" read -r index workspace name <<< "$row"
         if [[ -z "$workspace" ]]; then
-            printf "  %-3s %-${width}s  %-28s %s\n" "$index" "$name" "-" "not a workspace"
-            continue
+            branch="-" changes="not a workspace"
+        elif _dev_workspace_git "$workspace"; then
+            (( changes )) && changes="${changes} changed" || changes="clean"
         fi
-        branch="$(git -C "$workspace" branch --show-current 2>/dev/null)"
-        [[ -n "$branch" ]] || branch="(detached $(git -C "$workspace" rev-parse --short HEAD 2>/dev/null))"
-        changes=$(git -C "$workspace" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-        (( changes )) && changes="${changes} changed" || changes="clean"
-        printf "  %-3s %-${width}s  %-28s %s\n" "$index" "$name" "$branch" "$changes"
+        (( ${#branch} > bwidth )) && bwidth=${#branch}
+        out_rows+=("${index}${us}${name}${us}${branch}${us}${changes}")
+    done
+    printf "  %-3s %-${width}s  %-${bwidth}s  %s\n" "#" "workspace" "branch" "state"
+    for row in "${out_rows[@]}"; do
+        IFS="$us" read -r index name branch changes <<< "$row"
+        printf "  %-3s %-${width}s  %-${bwidth}s  %s\n" "$index" "$name" "$branch" "$changes"
     done
 }
 
@@ -746,6 +818,8 @@ _dev_create_worktree() {
         # scalar, and [-1] then takes its last character.
         local -a lines=(${(f)out})
         wt_path="${lines[-1]}"
+        # It ran in the repo root, so a relative path is relative to that.
+        [[ -z "$wt_path" || "$wt_path" == /* ]] || wt_path="${repo}/${wt_path}"
         if [[ -z "$wt_path" || ! -d "$wt_path" ]]; then
             echo -e "${RED}Error: the create command printed no existing directory: ${create_cmd}${NC}" >&2
             return 1
@@ -759,6 +833,8 @@ _dev_create_worktree() {
         if git -C "$repo" show-ref --verify --quiet "refs/heads/${branch}"; then
             git -C "$repo" worktree add -q "$wt_path" "$branch" >&2 || return 1
         else
+            # From the HEAD of the worktree you are in (prefix N: the current
+            # tab), so a new branch starts from what you were looking at.
             git worktree add -q -b "$branch" "$wt_path" >&2 || return 1
         fi
     fi
@@ -778,27 +854,34 @@ _dev_grid_free_indexes() {
 
 _dev_grid_open_tab() {
     local grid_session="$1" index="$2" wt_path="$3" repo="$4" label="${5:-${3:t}}"
-    tmux new-window -d -t "=${grid_session}:${index}" -n "$label" -c "$wt_path"
+    tmux new-window -d -t "=${grid_session}:${index}" -n "$(_dev_tmux_literal "$label")" -c "$(_dev_tmux_literal "$wt_path")"
     _dev_stamp_workspace "=${grid_session}:${index}" "$wt_path" "$repo"
 }
 
-# Worktrees with no tab (into `added`) and tabs whose worktree is gone (into
-# `removed`, as "index|path"), for the caller's arrays.
+# Worktrees with no tab (into `added`) and tabs whose directory is gone (into
+# `removed`, as "window id<US>index<US>path"), for the caller's arrays. A tab
+# outside the grid's --filter or --limit is not "removed": only a directory
+# that no longer exists is. If the workspace list cannot be read, this fails
+# rather than call every tab removed.
 _dev_grid_drift() {
-    local repo="$1" grid_session="$2" index workspace entry
+    local repo="$1" grid_session="$2" index workspace entry window_id entries us=$'\x1f'
     local filter="$(tmux show-options -t "=${grid_session}:" -qv @dev_grid_filter)"
     local limit="$(tmux show-options -t "=${grid_session}:" -qv @dev_grid_limit)"
+    entries="$(_dev_workspace_entries "$repo" "$filter" "$limit")" || {
+        echo -e "${RED}Error: could not read the workspace list; nothing changed${NC}" >&2
+        return 1
+    }
     local -a worktrees=() tabs=()
     labels_of=()
-    for entry in ${(f)"$(_dev_workspace_entries "$repo" "$filter" "$limit" 2>/dev/null)"}; do
+    for entry in ${(f)entries}; do
         worktrees+=("${entry%%$'\t'*}")
         labels_of[${entry%%$'\t'*}]="${entry#*$'\t'}"
     done
-    while IFS='|' read -r index workspace; do
+    while IFS="$us" read -r window_id index workspace; do
         [[ -n "$workspace" ]] || continue
         tabs+=("$workspace")
-        (( ${worktrees[(Ie)$workspace]} )) || removed+=("${index}|${workspace}")
-    done < <(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{@dev_workspace}')
+        [[ -d "$workspace" ]] || removed+=("${window_id}${us}${index}${us}${workspace}")
+    done < <(tmux list-windows -t "=${grid_session}:" -F "#{window_id}${us}#{window_index}${us}#{@dev_workspace}")
     for workspace in "${worktrees[@]}"; do
         (( ${tabs[(Ie)$workspace]} )) || added+=("$workspace")
     done
@@ -810,7 +893,7 @@ _dev_grid_sync() {
     _dev_grid_locate || return 1
     local -a added removed free=(${(f)"$(_dev_grid_free_indexes "$grid_session")"})
     local -A labels_of
-    _dev_grid_drift "$repo" "$grid_session"
+    _dev_grid_drift "$repo" "$grid_session" || return 1
     if (( ! ${#added} )); then
         echo -e "${GREEN}✓ Nothing to sync${NC}"
         return 0
@@ -832,34 +915,40 @@ _dev_grid_sync() {
 }
 
 _dev_grid_prune() {
-    local dry_run=0 repo grid_session
+    local dry_run=0 repo grid_session us=$'\x1f'
     [[ "$1" == "--dry-run" ]] && dry_run=1
     _dev_grid_locate || return 1
     local -a added removed
     local -A labels_of
-    _dev_grid_drift "$repo" "$grid_session"
+    _dev_grid_drift "$repo" "$grid_session" || return 1
     if (( ! ${#removed} )); then
         echo -e "${GREEN}✓ Nothing to prune${NC}"
         return 0
     fi
-    local entry index workspace ws_id sid parent popup_ws
+    local entry window_id index workspace ws_id sid parent popup_ws rc=0
     for entry in "${removed[@]}"; do
-        index="${entry%%|*}" workspace="${entry#*|}"
+        IFS="$us" read -r window_id index workspace <<< "$entry"
         if (( dry_run )); then
             echo "  would remove tab ${index} (${workspace:t})"
             continue
         fi
-        # The tab's popups carry its workspace id; they go with it.
-        ws_id="$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_ws_id)"
+        # By window id: with renumber-windows on, closing one tab renumbers
+        # the rest, and an index taken earlier would hit a live tab.
+        ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
         if [[ -n "$ws_id" ]]; then
-            tmux list-windows -a -F '#{session_id}|#{@dev_parent}|#{@dev_ws_id}' |
-                while IFS='|' read -r sid parent popup_ws; do
+            tmux list-windows -a -F "#{session_id}${us}#{@dev_parent}${us}#{@dev_ws_id}" |
+                while IFS="$us" read -r sid parent popup_ws; do
                     [[ -n "$parent" && "$popup_ws" == "$ws_id" ]] && tmux kill-session -t "$sid" 2>/dev/null
                 done
         fi
-        tmux kill-window -t "=${grid_session}:${index}"
-        echo -e "${GREEN}✓ Removed tab ${index} (${workspace:t})${NC}"
+        if tmux kill-window -t "$window_id"; then
+            echo -e "${GREEN}✓ Removed tab ${index} (${workspace:t})${NC}"
+        else
+            echo -e "${RED}✗ Could not remove tab ${index} (${workspace:t})${NC}"
+            rc=1
+        fi
     done
+    return $rc
 }
 
 _dev_grid_kill() {
@@ -1150,6 +1239,10 @@ dev() {
             _dev_overview "$2" "$3"
             ;;
 
+        __in)
+            _dev_popup_in "$2" "$3"
+            ;;
+
         __agent)
             # What the agent popup runs; not a user command.
             _dev_agent_exec "$2"
@@ -1367,12 +1460,16 @@ _dev_validate_ai_cmd() {
 #
 # Pass "nodisplay" as the fourth argument to create the popup's session
 # without showing it: `dev agent start` makes exactly what the key would.
+# The popup starts through `dev __in <pane id>`, which reads the pane's
+# directory from tmux as data and changes to it: a directory name never passes
+# through sh (a repo can name one `x$(cmd)` via .dev-grid) or through tmux's
+# format expansion (`#S` in a -c path became the session name).
 _dev_popup_script() {
     local prefix="$1" cmd="$2" suffix="${3:+-$3}" display="${4:-display}"
     local slug='[^a-zA-Z0-9_-]/-/'
     local key='#{?#{@dev_ws_id},#{@dev_ws_id},#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}}'
     local origin='#{?#{@dev_origin},#{@dev_origin},#{pane_id}}'
-    local create='SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
+    local create='SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" "zsh '"${(qq)DEV_SCRIPT}"' __in #{pane_id} '"${(qq)cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
     local show='; tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""'
     if [[ "$display" == nodisplay ]]; then
         print -r -- "$create"
@@ -1446,14 +1543,20 @@ _dev_publish_config() {
 # value is quoted once, properly. A popup's pane leads back to the pane its
 # workspace started from.
 _dev_agent_command() {
-    local pane="$1" origin
-    origin="$(tmux display-message -p -t "$pane" '#{@dev_origin}' 2>/dev/null)"
-    [[ -n "$origin" ]] && tmux display-message -p -t "$origin" '' &>/dev/null && pane="$origin"
+    local pane="$1" origin from_popup=0
+    origin="$(_dev_agent_origin "$pane")"
+    [[ "$origin" != "$pane" ]] && from_popup=1
+    pane="$origin"
 
     local workspace ws_id sid ai_cmd
     workspace="$(tmux display-message -p -t "$pane" '#{@dev_workspace}')"
     ws_id="$(tmux display-message -p -t "$pane" '#{@dev_ws_id}')"
     sid="$(tmux display-message -p -t "$pane" '#{@dev_agent_sid}')"
+    # A popup opened from the coordinator is a separate agent: resuming the
+    # coordinator's id would put two processes in one conversation.
+    if (( from_popup )) && [[ "$(tmux display-message -p -t "$pane" '#{@dev_popup_kind}')" == coordinator ]]; then
+        sid=""
+    fi
     ai_cmd="$(tmux display-message -p -t "$pane" '#{@dev_ai_cmd}')"
     [[ -n "$ai_cmd" ]] || ai_cmd="$(_dev_agent_cfg ai_cmd)"
     local ai_args="$(_dev_agent_cfg ai_args)"
@@ -1467,7 +1570,8 @@ _dev_agent_command() {
     local out=""
     [[ -n "$workspace" ]] && out+="cd ${(qq)workspace} || exit 1; "
     if [[ -n "$ssh_key" && -f "$ssh_key" ]]; then
-        out+="ssh-add ${(qq)ssh_key} 2>/dev/null; "
+        local failed="dev: ssh-add failed for ${ssh_key}"
+        out+="ssh-add ${(qq)ssh_key} || echo ${(qq)failed} >&2; "
     elif [[ -n "$ssh_key" ]]; then
         local warning="dev: ssh key not found, skipped: ${ssh_key}"
         out+="echo ${(qq)warning} >&2; "
@@ -1492,14 +1596,63 @@ _dev_agent_command() {
     print -r -- "$out"
 }
 
+# display-message -t on a pane that is gone still exits 0 (tmux 3.7b), so ask
+# which pane it resolved to.
+_dev_pane_exists() {
+    [[ -n "$1" && "$(tmux display-message -p -t "$1" '#{pane_id}' 2>/dev/null)" == "$1" ]]
+}
+
+# The pane a workspace's popups lead back to: the popup's @dev_origin while
+# that pane lives, else the grid tab carrying the same workspace id (the tab
+# was re-created), else the pane itself.
+_dev_agent_origin() {
+    local pane="$1" origin ws_id window_id id us=$'\x1f'
+    origin="$(tmux display-message -p -t "$pane" '#{@dev_origin}' 2>/dev/null)"
+    if [[ -n "$origin" ]] && _dev_pane_exists "$origin"; then
+        print -r -- "$origin"
+        return
+    fi
+    ws_id="$(tmux display-message -p -t "$pane" '#{@dev_ws_id}' 2>/dev/null)"
+    if [[ -n "$origin" && -n "$ws_id" ]]; then
+        while IFS="$us" read -r window_id id; do
+            if [[ "$id" == "$ws_id" ]] && [[ -n "$(tmux show-options -w -t "$window_id" -qv @dev_workspace)" ]]; then
+                tmux display-message -p -t "$window_id" '#{pane_id}'
+                return
+            fi
+        done < <(tmux list-windows -a -F "#{window_id}${us}#{@dev_ws_id}")
+    fi
+    print -r -- "$pane"
+}
+
+# What a popup runs: change to the directory the key was pressed in, read
+# from tmux as data, then run the popup's tool.
+_dev_popup_in() {
+    local pane="$1" cmd="$2" dir
+    dir="$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)"
+    [[ -n "$dir" ]] && cd -- "$dir" 2>/dev/null
+    exec sh -c "$cmd"
+}
+
 _dev_agent_exec() {
-    local cmd origin
+    local cmd origin rc
     cmd="$(_dev_agent_command "$1")" || return 1
     # Marks the workspace as having had an agent, so status can tell a dead
-    # one from one never started.
-    origin="$(tmux display-message -p -t "$1" '#{@dev_origin}' 2>/dev/null)"
-    tmux set-option -w -t "${origin:-$1}" @dev_agent_started 1 2>/dev/null
-    exec sh -c "$cmd"
+    # one from one never started; and records which pane is the agent's, so a
+    # brief never lands in a shell split beside it.
+    origin="$(_dev_agent_origin "$1")"
+    tmux set-option -w -t "$origin" @dev_agent_started 1 2>/dev/null
+    [[ -n "$TMUX_PANE" ]] && tmux set-option -t "$TMUX_PANE" @dev_agent_pane "$TMUX_PANE" 2>/dev/null
+    sh -c "$cmd"
+    rc=$?
+    # A popup closes the moment its command ends; a failed launch would flash
+    # and vanish. Keep the error on screen, and leave a mark `dev agent start`
+    # can read.
+    if (( rc )); then
+        [[ -n "$TMUX_PANE" ]] && tmux set-option -t "$TMUX_PANE" @dev_agent_exit "$rc" 2>/dev/null
+        print -r -- "dev: the agent exited with status ${rc}. Press Enter to close."
+        read -r
+    fi
+    return $rc
 }
 
 _dev_plural() {
@@ -1666,6 +1819,7 @@ _dev_agent_screen_ctx() {
 
 # The first line of a question an agent is waiting on, for status and watch.
 _dev_agent_screen_question() {
+    setopt localoptions extendedglob
     local line
     for line in "${(@f)$(cat)}"; do
         line="${line##[[:space:]]##}"
@@ -1692,10 +1846,11 @@ _dev_agent_grid() {
 _dev_agent_resolve() {
     local ws="$1" index name workspace
     local want_path="${ws:A}"
-    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{window_name}|#{@dev_workspace}')"})
+    local us=$'\x1f'
+    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F "#{window_index}${us}#{@dev_workspace}${us}#{window_name}")"})
     local row
     for row in "${rows[@]}"; do
-        IFS='|' read -r index name workspace <<< "$row"
+        IFS="$us" read -r index workspace name <<< "$row"
         if [[ -n "$workspace" && ( "$ws" == "$index" || "$ws" == "$name" || "$want_path" == "$workspace" ) ]]; then
             print -r -- "$index"
             return 0
@@ -1703,7 +1858,7 @@ _dev_agent_resolve() {
     done
     echo -e "${RED}Error: no workspace '${ws}' in ${grid_session}. Tabs:${NC}" >&2
     for row in "${rows[@]}"; do
-        IFS='|' read -r index name workspace <<< "$row"
+        IFS="$us" read -r index workspace name <<< "$row"
         echo "  ${index} ${name}" >&2
     done
     return 1
@@ -1726,13 +1881,17 @@ _dev_agent_start() {
     local -a extra
     while (( $# )); do
         case "$1" in
-            --brief) brief="$2"; shift 2 ;;
+            --brief) _dev_need_value "$1" $# || return 1; brief="$2"; shift 2 ;;
             --) shift; extra=("$@"); break ;;
             *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
         esac
     done
     if [[ -z "$ws" ]]; then
         echo -e "${RED}Usage: dev agent start <tab|label|path> [--brief <file>] [-- <agent flags>]${NC}"
+        return 1
+    fi
+    if [[ -n "$brief" && ! -r "$brief" ]]; then
+        echo -e "${RED}Error: cannot read the brief ${brief}${NC}"
         return 1
     fi
     local repo grid_session index
@@ -1743,8 +1902,8 @@ _dev_agent_start() {
     local running
     if running="$(_dev_agent_session_of "$ws_id")"; then
         echo -e "${BLUE}Agent for tab ${index} already running (${running})${NC}"
-        [[ -n "$brief" ]] && _dev_agent_send "$index" --file "$brief"
-        return 0
+        [[ -z "$brief" ]] || _dev_agent_send "$index" --file "$brief"
+        return
     fi
     if (( ${#extra} )); then
         tmux set-option -w -t "$target" @dev_agent_args "${(j: :)${(qq)extra[@]}}"
@@ -1756,17 +1915,20 @@ _dev_agent_start() {
     # A launcher that fails ends the session at once. Say so: a dead agent
     # that looks started is the silent failure this command exists to stop.
     local i
+    local code
     for i in 1 2 3 4 5 6 7 8; do
         sleep 0.2
-        running="$(_dev_agent_session_of "$ws_id")" || {
-            echo -e "${RED}Error: the agent for tab ${index} exited as soon as it started${NC}"
+        running="$(_dev_agent_session_of "$ws_id")" &&
+            code="$(tmux show-options -t "=${running}:" -qv @dev_agent_exit 2>/dev/null)"
+        if [[ -z "$running" || -n "$code" ]]; then
+            echo -e "${RED}Error: the agent for tab ${index} exited as soon as it started${code:+ (status ${code})}${NC}"
             echo -e "${YELLOW}Check ai_cmd / agent_launch_cmd with 'dev config list'${NC}"
+            [[ -n "$running" ]] && tmux kill-session -t "=${running}" 2>/dev/null
             return 1
-        }
+        fi
     done
     echo -e "${GREEN}✓ Agent for tab ${index} started (${running})${NC}"
-    [[ -n "$brief" ]] && _dev_agent_send "$index" --file "$brief"
-    return 0
+    [[ -z "$brief" ]] || _dev_agent_send "$index" --file "$brief"
 }
 
 # Whether a message reached the agent: its first characters are on screen,
@@ -1774,9 +1936,17 @@ _dev_agent_start() {
 # line into the transcript and empties the prompt; text still on the last
 # `❯` line was typed but not taken. Agents without a ❯ prompt only need the
 # text to appear.
+_dev_agent_receipt_count() {
+    local screen="$1" snippet="$2" line n=0
+    for line in "${(@f)screen}"; do
+        [[ "$line" == *"$snippet"* ]] && (( n++ ))
+    done
+    print -r -- "$n"
+}
+
 _dev_agent_receipt() {
-    local screen="$1" snippet="$2" line last_prompt=""
-    [[ "$screen" == *"$snippet"* ]] || return 1
+    local screen="$1" snippet="$2" before="${3:-0}" line last_prompt=""
+    (( $(_dev_agent_receipt_count "$screen" "$snippet") > before )) || return 1
     for line in "${(@f)screen}"; do
         [[ "$line" == ❯* ]] && last_prompt="$line"
     done
@@ -1789,9 +1959,9 @@ _dev_agent_send() {
     local -a words
     while (( $# )); do
         case "$1" in
-            --file) file="$2"; shift 2 ;;
+            --file) _dev_need_value "$1" $# || return 1; file="$2"; shift 2 ;;
             --no-confirm) confirm=0; shift ;;
-            --timeout) timeout="$2"; shift 2 ;;
+            --timeout) _dev_need_value "$1" $# || return 1; timeout="$2"; shift 2 ;;
             *) words+=("$1"); shift ;;
         esac
     done
@@ -1830,7 +2000,15 @@ _dev_agent_send() {
         line="$text"
     fi
 
-    local pane="$(tmux display-message -p -t "=${session}:" '#{pane_id}')"
+    # The agent's own pane, recorded when it started: the active pane may be
+    # a shell split beside it, where a brief would run as a command.
+    local pane="$(tmux show-options -t "=${session}:" -qv @dev_agent_pane)"
+    _dev_pane_exists "$pane" || pane="$(tmux display-message -p -t "=${session}:" '#{pane_id}')"
+    # The end of the line is what is unique to it — every pointer starts
+    # "Read and follow the instructions in" — and only a new occurrence counts:
+    # an earlier brief still on screen must not confirm this one.
+    local snippet="${line[-40,-1]}"
+    local before="$(_dev_agent_receipt_count "$(tmux capture-pane -p -J -t "$pane")" "$snippet")"
     # Text and Enter are separate key events: text sent with its Enter in one
     # call can sit in the input box unsubmitted. Each send is checked: tmux can
     # refuse one ("no current client") and carry on.
@@ -1842,9 +2020,9 @@ _dev_agent_send() {
         echo -e "${YELLOW}Sent to tab ${index} (unconfirmed)${NC}"
         return 0
     fi
-    local snippet="${line[1,40]}" i
+    local i
     for (( i = 0; i < timeout * 4; i++ )); do
-        if _dev_agent_receipt "$(tmux capture-pane -p -J -t "$pane")" "$snippet"; then
+        if _dev_agent_receipt "$(tmux capture-pane -p -J -t "$pane")" "$snippet" "$before"; then
             echo -e "${GREEN}✓ Delivered to tab ${index}${NC}"
             return 0
         fi
@@ -1867,13 +2045,11 @@ _dev_json_str() {
 # One row per workspace tab, "index|label|path|branch|changes|agent|ctx|detail",
 # shared by status and watch so they can never disagree.
 _dev_agent_rows() {
-    local row index name workspace ws_id started branch changes agent detail ctx session screen
-    for row in ${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{window_name}|#{@dev_workspace}|#{@dev_ws_id}|#{@dev_agent_started}')"}; do
-        IFS='|' read -r index name workspace ws_id started <<< "$row"
+    local row index name workspace ws_id started branch changes agent detail ctx session screen us=$'\x1f'
+    for row in ${(f)"$(tmux list-windows -t "=${grid_session}:" -F "#{window_index}${us}#{@dev_workspace}${us}#{@dev_ws_id}${us}#{@dev_agent_started}${us}#{window_name}")"}; do
+        IFS="$us" read -r index workspace ws_id started name <<< "$row"
         [[ -n "$workspace" ]] || continue
-        branch="$(git -C "$workspace" branch --show-current 2>/dev/null)"
-        [[ -n "$branch" ]] || branch="(detached $(git -C "$workspace" rev-parse --short HEAD 2>/dev/null))"
-        changes=$(git -C "$workspace" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        _dev_workspace_git "$workspace"
         detail="" ctx=""
         if session="$(_dev_agent_session_of "$ws_id")"; then
             screen="$(tmux capture-pane -p -t "=${session}:" 2>/dev/null)"
@@ -1885,7 +2061,7 @@ _dev_agent_rows() {
         else
             agent=none
         fi
-        print -r -- "${index}|${name}|${workspace}|${branch}|${changes}|${agent}|${ctx}|${detail//|//}"
+        print -r -- "${index}${us}${name}${us}${workspace}${us}${branch}${us}${changes}${us}${agent}${us}${ctx}${us}${detail}"
     done
 }
 
@@ -1894,20 +2070,28 @@ _dev_agent_status() {
     [[ "$1" == "--json" ]] && json=1
     local repo grid_session
     _dev_agent_grid || return 1
+    local us=$'\x1f'
     local -a rows=(${(f)"$(_dev_agent_rows)"})
-    local row index name workspace branch changes agent ctx detail width=9
+    local row index name workspace branch changes agent ctx detail width=9 bwidth=6 state
     for row in "${rows[@]}"; do
-        name="${${row#*|}%%|*}"
+        IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
         (( ${#name} > width )) && width=${#name}
+        (( ${#branch} > bwidth )) && bwidth=${#branch}
     done
-    (( json )) || printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "#" "workspace" "branch" "state" "agent" "detail"
+    (( json )) || printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %s\n" "#" "workspace" "branch" "state" "agent" "detail"
     for row in "${rows[@]}"; do
-        IFS='|' read -r index name workspace branch changes agent ctx detail <<< "$row"
+        IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
         if (( json )); then
-            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${changes},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null}}"
+            # dirty is a count, or null when git could not say.
+            [[ "$changes" == <-> ]] && state="$changes" || state=null
+            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${state},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null}}"
         else
-            (( changes )) && changes="${changes} changed" || changes="clean"
-            printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "$index" "$name" "$branch" "$changes" "$agent" "${detail}${ctx:+ (ctx ${ctx}%)}"
+            if [[ "$changes" == <-> ]]; then
+                (( changes )) && state="${changes} changed" || state="clean"
+            else
+                state="$changes"
+            fi
+            printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %s\n" "$index" "$name" "$branch" "$state" "$agent" "${detail}${ctx:+ (ctx ${ctx}%)}"
         fi
     done
 }
@@ -1917,14 +2101,17 @@ _dev_agent_status() {
 # final line says the watch stopped and why, so silence never means all clear.
 # Read-only, except --notify's attention marker on a tab.
 _dev_agent_watch() {
+    # Local traps: on a sourced install the watch runs in the user's own
+    # shell, and an INT trap left behind would hijack every later Ctrl-C.
+    setopt localoptions localtraps
     zmodload zsh/datetime
     local interval=10 every=1800 for_secs=0 json=0 notify=0 ctx_limit=90
     while (( $# )); do
         case "$1" in
-            --interval) interval="$2"; shift 2 ;;
-            --every) every="$2"; shift 2 ;;
-            --for) for_secs="$2"; shift 2 ;;
-            --ctx) ctx_limit="$2"; shift 2 ;;
+            --interval) _dev_need_value "$1" $# || return 1; interval="$2"; shift 2 ;;
+            --every) _dev_need_value "$1" $# || return 1; every="$2"; shift 2 ;;
+            --for) _dev_need_value "$1" $# || return 1; for_secs="$2"; shift 2 ;;
+            --ctx) _dev_need_value "$1" $# || return 1; ctx_limit="$2"; shift 2 ;;
             --json) json=1; shift ;;
             --notify) notify=1; shift ;;
             *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
@@ -1966,9 +2153,9 @@ _dev_agent_watch() {
     }
 
     typeset -A prev_state prev_label prev_over
-    local row index name workspace branch changes agent ctx detail
+    local row index name workspace branch changes agent ctx detail us=$'\x1f'
     for row in ${(f)"$(_dev_agent_rows)"}; do
-        IFS='|' read -r index name workspace branch changes agent ctx detail <<< "$row"
+        IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
         prev_state[$index]="$agent" prev_label[$index]="$name"
         [[ -n "$ctx" ]] && (( ctx >= ctx_limit )) && prev_over[$index]=1
     done
@@ -1983,9 +2170,9 @@ _dev_agent_watch() {
             fi
             sleep "$interval"
             for row in ${(f)"$(_dev_agent_rows)"}; do
-                IFS='|' read -r index name workspace branch changes agent ctx detail <<< "$row"
+                IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
                 prev_label[$index]="$name"
-                if [[ "${prev_state[$index]}" != "$agent" ]]; then
+                if [[ "${prev_state[$index]:-none}" != "$agent" ]]; then
                     _dev_watch_emit change "$index" "${prev_state[$index]:-none}" "$agent" "$detail"
                     if (( notify )) && [[ "$agent" == (waiting|idle|dead|unknown) ]]; then
                         tmux set-option -w -t "=${grid_session}:${index}" @dev_attention "$agent"
@@ -2064,6 +2251,10 @@ _dev_coordinator() {
         tmux set-option -w -t "=${name}:" @dev_agent_sid "$(_dev_sid_for "dev-grid:${repo}:coordinator")"
         local coord_pane="$(tmux display-message -p -t "=${name}:" '#{pane_id}')"
         tmux respawn-pane -k -t "$coord_pane" "zsh ${(qq)DEV_SCRIPT} __agent ${(qq)coord_pane}"
+    elif ! tmux has-session -t "=${name}" 2>/dev/null; then
+        # Not the race (the other press made it): creating it failed.
+        _dev_tell "$client" "Could not start the coordinator for ${grid_session}"
+        return 1
     fi
     [[ -n "$client" ]] && tmux display-popup -c "$client" -w 90% -h 90% -b single \
         -T " coordinator · ${grid_session} " -E "tmux attach-session -t '=${name}'"
