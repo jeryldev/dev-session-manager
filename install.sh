@@ -115,9 +115,11 @@ ZSHRC="${HOME}/.zshrc"
 SOURCE_LINE='[[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh'
 
 if ! grep -qF "$SOURCE_LINE" "$ZSHRC" 2>/dev/null; then
-  echo "" >>"$ZSHRC"
-  echo "# Dev session manager" >>"$ZSHRC"
-  echo "$SOURCE_LINE" >>"$ZSHRC"
+  {
+    echo ""
+    echo "# Dev session manager"
+    echo "$SOURCE_LINE"
+  } >>"$ZSHRC"
   echo -e "${GREEN}✓${NC} Added source line to ~/.zshrc"
 else
   echo -e "${YELLOW}→${NC} Source line already exists in ~/.zshrc"
