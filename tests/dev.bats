@@ -167,6 +167,202 @@ assert_windows_one_to_seven() {
     [[ "$popups" =~ ^[a-zA-Z0-9_-]+$ ]]
 }
 
+@test "the popup script slugs the session name as well as the window name" {
+    # US-3.5: tmux keeps '.' in a session name and then cannot target it, so a
+    # popup opened from a session called 'v1.2' would leak like B1 did.
+    local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script term sh" </dev/null)"
+    [[ "$script" == *'#{s/[^a-zA-Z0-9_-]/-/:session_name}'* ]]
+}
+
+# ─── B2: popup lifecycle (US-7, US-8, US-9) ───
+
+# Open a popup the way its key does: run-shell expands the #{...} formats in
+# the context of the session it targets. display-popup itself fails without a
+# client, after the popup session already exists — which is all these need.
+open_popup() {
+    local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script $2 '$3'" </dev/null)"
+    tmux run-shell -t "$1" "$script" 2>/dev/null || true
+}
+
+session_id_of() { tmux display-message -p -t "$1" '#{session_id}'; }
+
+session_names() { tmux list-sessions -F '#{session_name}' 2>/dev/null | sort; }
+
+install_hooks() {
+    zsh -c "source '$DEV_ZSH' 2>/dev/null" </dev/null
+}
+
+@test "a popup records its parent by session id, not by name" {
+    start_isolated_server dev-proj
+    open_popup dev-proj term "sleep 300"
+    local popup; popup="$(session_names | grep '^term-')"
+    [ -n "$popup" ]
+    [ "$(tmux show-options -t "$popup" -v @dev_parent)" = "$(session_id_of dev-proj)" ]
+}
+
+@test "dev kill takes the session's popups with it and says how many" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    open_popup dev-proj term "sleep 300"
+    open_popup dev-proj lg "sleep 300"
+    run_dev kill proj
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 popups"* ]]
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev kill reaps the popups of a session that was renamed" {
+    # US-8.9: prefix $ renames the parent; a name stamp would strand them.
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    open_popup dev-proj term "sleep 300"
+    tmux rename-session -t dev-proj dev-renamed
+    run_dev kill renamed
+    [ "$status" -eq 0 ]
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev kill reaps a popup whose name tmux cannot target" {
+    # US-8.2: tmux keeps '.' in a name and then splits on it when targeting,
+    # so only the session id reaches this one.
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    tmux new-session -d -s 'ai-v1.2-x' "sleep 300"
+    tmux set-option -t '$2' @dev_parent "$(session_id_of dev-proj)"
+    ! tmux has-session -t 'ai-v1.2-x' 2>/dev/null
+    run_dev kill proj
+    [ "$status" -eq 0 ]
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev kill leaves other sessions' popups alone" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    tmux new-session -d -s dev-other
+    open_popup dev-other term "sleep 300"
+    run_dev kill proj
+    [ "$(session_names | grep -c '^term-dev-other')" -eq 1 ]
+}
+
+@test "the popup reaper hook is installed once, however often dev is loaded" {
+    # US-8.6: set-hook -ga would append one reaper per shell start.
+    start_isolated_server
+    install_hooks
+    install_hooks
+    [ "$(tmux show-hooks -g session-closed | grep -c 'dev_parent')" -eq 1 ]
+}
+
+@test "the popup reaper hook keeps the user's own session-closed hook" {
+    # US-8.7
+    start_isolated_server
+    tmux set-hook -g session-closed 'display-message mine'
+    install_hooks
+    [[ "$(tmux show-hooks -g session-closed)" == *"display-message mine"* ]]
+}
+
+@test "killing a session with plain tmux reaps its popups, and theirs" {
+    # US-8.4/8.8: the hook cascades — each reaped popup fires it again.
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    install_hooks
+    open_popup dev-proj term "sleep 300"
+    local popup; popup="$(session_names | grep '^term-')"
+    open_popup "$popup" ai "sleep 300"
+    [ "$(session_names | grep -c '^ai-')" -eq 1 ]
+    tmux kill-session -t dev-proj
+    local i; for i in 1 2 3 4 5 6 7 8 9 10; do
+        [ "$(session_names)" = "keep" ] && break
+        sleep 0.2
+    done
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev ls does not list popup sessions" {
+    # US-7.1
+    start_isolated_server dev-proj
+    open_popup dev-proj term "sleep 300"
+    run_dev ls
+    [[ "$output" == *"proj"* ]]
+    [[ "$output" != *"term-"* ]]
+}
+
+@test "dev ls --all lists popups under their parent, even after a rename" {
+    # US-7.2/7.6
+    start_isolated_server dev-proj
+    open_popup dev-proj term "sleep 300"
+    tmux rename-session -t dev-proj dev-renamed
+    run_dev ls --all
+    [ "$status" -eq 0 ]
+    local after; after="${output#*renamed}"
+    [[ "$after" == *"term-dev-proj"* ]]
+    [[ "$output" != *"orphan"* ]]
+}
+
+@test "dev ls --all marks a popup whose parent is gone" {
+    # US-7.3
+    start_isolated_server keep
+    tmux new-session -d -s term-stray "sleep 300"
+    tmux set-option -t term-stray @dev_parent '$999'
+    run_dev ls --all
+    [[ "$output" == *"rphan"* ]]
+    [[ "$output" == *"term-stray"* ]]
+}
+
+@test "dev clean is a command, not a session called dev-clean" {
+    start_isolated_server keep
+    run_dev clean
+    [ "$status" -eq 0 ]
+    ! tmux has-session -t dev-clean 2>/dev/null
+}
+
+@test "dev clean with nothing to do says so" {
+    # US-9.1
+    start_isolated_server dev-proj
+    open_popup dev-proj term "sleep 300"
+    run_dev clean
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No orphaned popups"* ]]
+    [ "$(session_names | grep -c '^term-')" -eq 1 ]
+}
+
+@test "dev clean removes orphans and counts them" {
+    # US-9.2/9.4/9.6
+    start_isolated_server dev-proj
+    open_popup dev-proj term "sleep 300"
+    tmux new-session -d -s 'lg-gone-1-v1.2' "sleep 300"
+    tmux new-session -d -s ai-gone "sleep 300"
+    local id; for id in $(tmux list-sessions -F '#{session_id} #{session_name}' | awk '$2 ~ /gone/ {print $1}'); do
+        tmux set-option -t "$id" @dev_parent '$999'
+    done
+    run_dev clean
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 orphaned popups"* ]]
+    [ "$(session_names | grep -c gone)" -eq 0 ]
+    [ "$(session_names | grep -c '^term-dev-proj')" -eq 1 ]
+}
+
+@test "dev clean --dry-run lists orphans and kills nothing" {
+    # US-9.3
+    start_isolated_server keep
+    tmux new-session -d -s ai-gone "sleep 300"
+    tmux set-option -t ai-gone @dev_parent '$999'
+    run_dev clean --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ai-gone"* ]]
+    tmux has-session -t ai-gone
+}
+
+@test "dev clean reports unstamped legacy popups and never kills them" {
+    # US-9.5 / D19: only the name says they are ours, and a name is not proof.
+    start_isolated_server keep
+    tmux new-session -d -s ai-dev-old-1-editor-claude "sleep 300"
+    run_dev clean
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ai-dev-old-1-editor-claude"* ]]
+    [[ "$output" == *"kill-session -t '\$1'"* ]]
+    tmux has-session -t ai-dev-old-1-editor-claude
+}
+
 # ─── B7: attaching from inside tmux (US-2) ───
 
 # A tmux on PATH that records attach/switch-client instead of running them —

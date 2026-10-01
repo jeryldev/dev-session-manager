@@ -166,7 +166,9 @@ dev() {
             echo -e "  ${BLUE}dev <name>${NC}         Create or attach to a dev session"
             echo -e "  ${BLUE}dev attach <name>${NC}  Attach to an existing dev session"
             echo -e "  ${BLUE}dev ls${NC}             List all dev sessions"
-            echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session"
+            echo -e "  ${BLUE}dev ls --all${NC}       ...and the popup sessions under each"
+            echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session and its popups"
+            echo -e "  ${BLUE}dev clean${NC}          Remove popups whose session is gone"
             echo -e "  ${BLUE}dev reload${NC}         Reload popup keybindings"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
@@ -204,11 +206,28 @@ dev() {
 
             echo -e "${GREEN}Active dev sessions:${NC}"
             local sessions=$(tmux list-sessions 2>/dev/null | grep "^${DEV_SESSION_PREFIX}")
+            if [[ "$2" == "--all" ]]; then
+                local orphan_rows=$(_dev_orphan_popups)
+                if [[ -n "$orphan_rows" ]]; then
+                    echo -e "${YELLOW}Orphaned popups (parent gone, 'dev clean' removes them):${NC}"
+                    local id parent name
+                    while IFS='|' read -r id parent name; do
+                        echo "  $name"
+                    done <<< "$orphan_rows"
+                    echo ""
+                fi
+            fi
             if [ -z "$sessions" ]; then
                 echo -e "  ${YELLOW}No dev sessions found${NC}"
             else
                 while IFS= read -r line; do
                     echo "  ${line#${DEV_SESSION_PREFIX}}"
+                    if [[ "$2" == "--all" ]]; then
+                        local popup_id
+                        for popup_id in ${(f)"$(_dev_popup_descendants "$(tmux display-message -p -t "=${line%%:*}:" '#{session_id}')")"}; do
+                            echo "    ↳ $(tmux display-message -p -t "$popup_id" '#{session_name}')"
+                        done
+                    fi
                 done <<< "$sessions"
                 echo ""
                 echo -e "${BLUE}Tip: Use 'dev attach <name>' to attach or 'dev kill <name>' to kill${NC}"
@@ -259,10 +278,68 @@ dev() {
             local display_name=$(_dev_display_name "$session_name")
 
             if tmux has-session -t "=${session_name}" 2>/dev/null; then
+                # The trailing ':' matters: display-message takes a pane target,
+                # where a bare '=name' resolves to nothing, silently.
+                # Popups first, by id: the session-closed hook would race us
+                # for them otherwise, and a leaked popup's name may not be
+                # targetable at all.
+                local session_id=$(tmux display-message -p -t "=${session_name}:" '#{session_id}')
+                local -a popups=(${(f)"$(_dev_popup_descendants "$session_id")"})
+                local popup_id
+                for popup_id in "${popups[@]}"; do
+                    tmux kill-session -t "$popup_id" 2>/dev/null
+                done
                 tmux kill-session -t "=${session_name}"
-                echo -e "${GREEN}✓ Killed session: ${display_name}${NC}"
+                if (( ${#popups} )); then
+                    echo -e "${GREEN}✓ Killed session: ${display_name} (and $(_dev_plural ${#popups} popup))${NC}"
+                else
+                    echo -e "${GREEN}✓ Killed session: ${display_name}${NC}"
+                fi
             else
                 _dev_session_not_found "$display_name"
+            fi
+            ;;
+
+        clean)
+            if ! _dev_check_tmux; then
+                return 1
+            fi
+            local dry_run=0
+            [[ "$2" == "--dry-run" ]] && dry_run=1
+
+            local orphan_rows=$(_dev_orphan_popups)
+            local -a doomed
+            local id parent name
+            if [[ -n "$orphan_rows" ]]; then
+                while IFS='|' read -r id parent name; do
+                    doomed+=("$id" ${(f)"$(_dev_popup_descendants "$id")"})
+                done <<< "$orphan_rows"
+            fi
+
+            if (( ! ${#doomed} )); then
+                echo -e "${GREEN}✓ No orphaned popups${NC}"
+            elif (( dry_run )); then
+                echo -e "${YELLOW}Would remove $(_dev_plural ${#doomed} "orphaned popup"):${NC}"
+                for id in "${doomed[@]}"; do
+                    echo "  $(tmux display-message -p -t "$id" '#{session_name}')"
+                done
+            else
+                for id in "${doomed[@]}"; do
+                    tmux kill-session -t "$id" 2>/dev/null
+                done
+                echo -e "${GREEN}✓ Removed $(_dev_plural ${#doomed} "orphaned popup")${NC}"
+            fi
+
+            # Unstamped popups from before v2.4 are only ours by name, and a
+            # name is not proof: report them, never kill them.
+            local legacy_rows=$(tmux list-sessions -F '#{session_id}|#{@dev_parent}|#{session_name}' 2>/dev/null |
+                grep -E '^[^|]*\|\|(ai|kb|lg|term)-')
+            if [[ -n "$legacy_rows" ]]; then
+                echo ""
+                echo -e "${YELLOW}Popup sessions from before v2.4 (not removed; they carry no owner stamp):${NC}"
+                while IFS='|' read -r id parent name; do
+                    echo "  $name    tmux kill-session -t '$id'"
+                done <<< "$legacy_rows"
             fi
             ;;
 
@@ -413,13 +490,65 @@ _dev_validate_ai_cmd() {
 }
 
 # The shell script a popup key runs. tmux expands its #{...} formats at key
-# press time, then hands it to sh. The window name is slugged there, not here:
-# it is only known at key press, and tmux cannot target a session whose name
-# holds ':' or '.'. The attach target is quoted because the -E payload is
-# word-split by sh, where an unquoted name with a space breaks the attach.
+# press time, then hands it to sh. Both names are slugged there, not here: they
+# are only known at key press, and tmux keeps ':' and '.' in a session name but
+# cannot target one that has them. The attach target is quoted because the -E
+# payload is word-split by sh, where an unquoted name with a space breaks the
+# attach.
+#
+# The popup is stamped with its parent's session id, in the same tmux command
+# that creates it. An id, not a name: `prefix $` renames sessions, and a name
+# stamp would then make every popup of a live session look orphaned. The id is
+# single-quoted because sh would read `$1` as a positional parameter.
 _dev_popup_script() {
     local prefix="$1" cmd="$2" suffix="${3:+-$3}"
-    print -r -- 'SESSION="'"${prefix}"'-#{session_name}-#{window_index}-#{s/[^a-zA-Z0-9_-]/-/:window_name}'"${suffix}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t \"$SESSION\""'
+    local slug='[^a-zA-Z0-9_-]/-/'
+    print -r -- 'SESSION="'"${prefix}"'-#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}'"${suffix}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'" \; set-option -t "$SESSION" @dev_parent '"'"'#{session_id}'"'"'; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t \"$SESSION\""'
+}
+
+# The session-closed hook that reaps a closed session's popups. Pure sh and
+# tmux: on a sourced install `dev` is a shell function run-shell cannot see.
+# `##{...}` survives the hook's own format expansion and reaches list-sessions
+# intact. Each reaped popup fires the hook again, so popups of popups go too.
+_dev_reaper_hook() {
+    print -r -- 'run-shell "tmux list-sessions -F '"'"'##{session_id}|##{@dev_parent}'"'"' | while IFS=\"|\" read -r id parent; do [ \"\$parent\" = '"'"'#{hook_session}'"'"' ] && tmux kill-session -t \"\$id\"; done; true"'
+}
+
+# "id|parent id|name" for every session a popup key created.
+_dev_popup_sessions() {
+    local id parent name
+    tmux list-sessions -F '#{session_id}|#{@dev_parent}|#{session_name}' 2>/dev/null |
+        while IFS='|' read -r id parent name; do
+            [[ -n "$parent" ]] && print -r -- "${id}|${parent}|${name}"
+        done
+}
+
+# Session ids of every popup descended from the given session id.
+_dev_popup_descendants() {
+    local rows="$(_dev_popup_sessions)" id parent name current
+    local -a queue=("$1") found
+    while (( ${#queue} )); do
+        current="${queue[1]}"
+        shift queue
+        while IFS='|' read -r id parent name; do
+            [[ -n "$id" && "$parent" == "$current" ]] && found+=("$id") queue+=("$id")
+        done <<< "$rows"
+    done
+    (( ${#found} )) && print -l -- "${found[@]}"
+}
+
+# Popups whose parent session no longer exists. Ids are never reused while
+# the server lives, so a missing parent id means the parent is really gone.
+_dev_orphan_popups() {
+    local live=" $(tmux list-sessions -F '#{session_id}' 2>/dev/null | tr '\n' ' ') "
+    local id parent name
+    _dev_popup_sessions | while IFS='|' read -r id parent name; do
+        [[ "$live" != *" $parent "* ]] && print -r -- "${id}|${parent}|${name}"
+    done
+}
+
+_dev_plural() {
+    (( $1 == 1 )) && print -r -- "$1 $2" || print -r -- "$1 ${2}s"
 }
 
 _dev_bind_popup() {
@@ -430,6 +559,10 @@ _dev_bind_popup() {
 
 _dev_setup_popup_keybindings() {
     tmux list-sessions &>/dev/null || return 1
+    # A fixed index, not -ga: this runs on every shell start, and -ga would
+    # append another reaper each time. Index 0, where a user's own hook lands,
+    # is left alone.
+    tmux set-hook -g 'session-closed[99]' "$(_dev_reaper_hook)"
     _dev_bind_popup j term "${SHELL:-zsh}"
     if _dev_validate_ai_cmd; then
         _dev_bind_popup a ai "[ -f ~/.ssh/id_ed25519 ] && ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
