@@ -1,20 +1,146 @@
 #!/usr/bin/env bats
 # Tests for dev.zsh
 
+# A hung test must fail, not stall the suite. `dev <existing-name>` can block on
+# `read` if stdin is ever a TTY, and a leaked tmux server holding bats' output
+# descriptor open has the same effect — both have happened here, and both look
+# identical from outside: a run that simply stops. Must be set at file scope;
+# setting it in setup() is too late, the countdown has already started.
+export BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-60}"
+
 setup() {
     load test_helper
-    load_dev_functions
     DEV_ZSH="$PROJECT_ROOT/dev.zsh"
+    isolate_tmux
+}
+
+# Load-bearing, not hygiene: a tmux server that survives a test inherits bats'
+# output file descriptor and holds it open, so the run never exits.
+teardown() {
+    teardown_tmux
 }
 
 # Helper: run a dev.zsh function via zsh
 run_zsh_func() {
-    run zsh -c "source '$DEV_ZSH' 2>/dev/null; $*"
+    run zsh -c "source '$DEV_ZSH' 2>/dev/null; $*" </dev/null
 }
 
 # Helper: run dev command via zsh (simulates direct execution)
+# stdin is closed on purpose, and it is load-bearing rather than tidiness.
+#
+# `dev <existing-name>` branches on `[[ ! -t 0 ]]`. Without this redirect the
+# subshell inherits whatever stdin bats was launched with: a pipe under CI (so
+# the guard fires and the test passes) but a TTY when a developer runs `bats
+# tests/` from a terminal — where `dev` instead takes the interactive branch and
+# blocks forever on `read -r choice`. The suite then hangs mid-run with no
+# failure message. Closing stdin here makes every test mean the same thing in
+# both places.
 run_dev() {
-    run zsh -c "source '$DEV_ZSH' 2>/dev/null; dev $*"
+    run zsh -c "source '$DEV_ZSH' 2>/dev/null; dev $*" </dev/null
+}
+
+# ─── Test isolation (guards the suite itself) ───
+
+@test "the suite runs against an isolated tmux server, not the developer's" {
+    # This is the regression guard for T2. Two isolation mechanisms have failed
+    # here in ways that looked correct: -L (only redirected the tests' own tmux
+    # calls) and a bare TMUX_TMPDIR (outranked by $TMUX when run inside tmux).
+    # Assert the distinguishing observation directly.
+    [ -z "$TMUX" ]
+    [ -n "$TMUX_TMPDIR" ]
+    start_isolated_server
+    local real
+    real="$(cd "$TMUX_TMPDIR" && pwd -P)"
+    run tmux display-message -p '#{socket_path}'
+    [ "$status" -eq 0 ]
+    [[ "$output" == "$real"/* ]]
+}
+
+@test "the isolated server uses stock tmux config, even when dev.zsh starts it" {
+    # Socket isolation is NOT config isolation. dev.zsh starts servers with bare
+    # `tmux`, which reads ~/.tmux.conf at server start. A developer running
+    # `base-index 1` therefore gets windows 1-7 and a green suite, while every
+    # user on a stock config gets 0,2-7 and a dead `prefix 1` (B8). The socket
+    # guard passes throughout — it only ever proved the socket.
+    #
+    # No start_isolated_server here on purpose: dev.zsh must start the server,
+    # exactly as it does on a machine with none running.
+    run zsh -c "source '$DEV_ZSH' 2>/dev/null; tmux new-session -d -s cfgprobe; tmux show-option -gv base-index"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+}
+
+@test "the isolation guard does not kill a server it did not start" {
+    # The guard exists for the case where isolation silently failed and tmux is
+    # resolving to the developer's live server. Killing that server on the way
+    # to reporting the failure costs every session the developer had open, which
+    # is a worse outcome than the bug being guarded against.
+    local decoy="$BATS_TEST_TMPDIR/decoy"
+    mkdir -p "$decoy"
+    TMUX_TMPDIR="$decoy" tmux -f /dev/null new-session -d -s decoy-session
+    local decoy_sock
+    decoy_sock="$(TMUX_TMPDIR="$decoy" tmux display-message -p '#{socket_path}')"
+
+    # Sabotage isolation the way a third broken mechanism would: point $TMUX at
+    # the decoy so it outranks TMUX_TMPDIR, then ask the guard to run.
+    run env TMUX="$decoy_sock,1,0" \
+            BATS_TEST_TMPDIR="$BATS_TEST_TMPDIR/sabotage" \
+            bash -c "mkdir -p \"\$BATS_TEST_TMPDIR\"; BATS_TEST_FILENAME='$BATS_TEST_FILENAME'; source '$PROJECT_ROOT/tests/test_helper.bash'; isolate_tmux"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"REFUSING TO RUN"* ]]
+
+    # The decoy must still be standing.
+    run env TMUX_TMPDIR="$decoy" tmux has-session -t decoy-session
+    [ "$status" -eq 0 ]
+
+    TMUX_TMPDIR="$decoy" tmux kill-server 2>/dev/null || true
+}
+
+# ─── B8: advertised window numbers must exist (US-1) ───
+
+@test "dev <name> numbers its seven windows contiguously from base-index" {
+    # `dev help` advertises windows 1-7. The code hardcodes -t <session>:2..:7
+    # while new-session puts the first window at the server's base-index. On the
+    # developer's machine base-index is 1 and the two line up; on a stock config
+    # base-index is 0, the windows land on 0 and 2-7, and `prefix 1` reaches
+    # nothing at all. Assert contiguity from base-index so this holds either way.
+    create_dev_session layout
+    local base; base="$(tmux show-option -gv base-index)"
+
+    local expected="" i=0
+    for name in frontend backend database testing editor scratch extra; do
+        expected+="$((base + i)):$name"$'\n'
+        i=$((i + 1))
+    done
+
+    run tmux list-windows -t dev-layout -F '#{window_index}:#{window_name}'
+    [ "$status" -eq 0 ]
+    [ "$output" = "${expected%$'\n'}" ]
+}
+
+@test "dev <name> opens on the editor window, whatever its index" {
+    # 'Starts at window 5 (editor)' is only true when base-index is 1.
+    create_dev_session startwin
+    run tmux display-message -p -t dev-startwin '#{window_name}'
+    [ "$status" -eq 0 ]
+    [ "$output" = "editor" ]
+}
+
+# ─── B1: popup target quoting ───
+
+@test "the popup binding quotes its attach target" {
+    # tmux hands a display-popup -E payload to sh, which word-splits. A window
+    # renamed 'my work' makes SESSION contain a space, so an unquoted $SESSION
+    # becomes two arguments and the attach fails with 'too many arguments' —
+    # after new-session has already created (and leaked) the popup session.
+    # has-session and new-session already quote it; the attach does not.
+    start_isolated_server
+    zsh -c "source '$DEV_ZSH' 2>/dev/null" </dev/null
+
+    local cmd
+    cmd="$(tmux list-keys -T prefix | grep -E '^bind-key +-T prefix +j ' | sed 's/\\\\//g')"
+    [ -n "$cmd" ]
+    [[ "$cmd" == *'attach-session -t "$SESSION"'* ]]
 }
 
 # ─── _dev_has_command ───
@@ -300,18 +426,13 @@ run_dev() {
 # ─── dev reload ───
 
 @test "dev reload without tmux server shows warning" {
-    if tmux list-sessions &>/dev/null; then
-        skip "tmux server is running"
-    fi
     run_dev reload
     [ "$status" -ne 0 ]
     [[ "$output" == *"No active tmux server"* ]]
 }
 
 @test "dev reload with tmux server updates keybindings" {
-    if ! tmux list-sessions &>/dev/null; then
-        skip "no tmux server running"
-    fi
+    start_isolated_server
     run_dev reload
     [ "$status" -eq 0 ]
     [[ "$output" == *"Reloading"* ]]
@@ -324,15 +445,6 @@ run_dev() {
     run_dev '"bad name!"'
     [ "$status" -ne 0 ]
     [[ "$output" == *"letters, numbers, hyphens, and underscores"* ]]
-}
-
-@test "dev create and kill session lifecycle" {
-    if ! command -v tmux &>/dev/null; then
-        skip "tmux not installed"
-    fi
-    # We can't test full create (it calls tmux attach which blocks),
-    # but we can test that create detects missing tmux or validates names
-    run_dev 'kill bats-test-session 2>/dev/null; true'
 }
 
 # ─── _dev_check_tmux ───
@@ -360,9 +472,6 @@ run_dev() {
 # ─── Popup keybinding guards ───
 
 @test "_dev_setup_popup_keybindings returns non-zero without tmux server" {
-    if tmux list-sessions &>/dev/null 2>&1; then
-        skip "tmux server is running"
-    fi
     run zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_setup_popup_keybindings"
     [ "$status" -ne 0 ]
 }
@@ -420,19 +529,29 @@ run_dev() {
 
 # ─── Issue 3: read -r and terminal guard for interactive prompts ───
 
-@test "dev.zsh uses read -r for interactive choice prompt" {
-    # Grep for 'read' followed by 'choice' without -r flag (should find zero matches)
-    run grep -nE 'read [^-]' "$DEV_ZSH"
-    if [ "$status" -eq 0 ]; then
-        fail "Found 'read' without -r flag in dev.zsh: $output"
-    fi
+@test "dev <name> refuses to prompt when stdin is not a TTY" {
+    # Behavioural replacement for the old '[[ -t 0 ]]' source-grep (T3): drive
+    # the real path instead of asserting on the text of the file.
+    start_isolated_server dev-ttyguard
+    run_dev ttyguard
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"non-interactive"* ]]
 }
 
-@test "dev.zsh has terminal guard for interactive prompt" {
-    # The interactive prompt section should check [[ ! -t 0 ]] before reading
-    run grep -cE '\[\[ (! )?-t 0 \]\]' "$DEV_ZSH"
-    [ "$status" -eq 0 ]
-    [ "$output" -ge 1 ]
+@test "dev <name> does not hang when stdin is not a TTY" {
+    start_isolated_server dev-ttyguard
+    run timeout 5 zsh -c "source '$DEV_ZSH' 2>/dev/null; dev ttyguard" </dev/null
+    # 124 is timeout(1) killing a hung prompt — the bug this guards against
+    [ "$status" -ne 124 ]
+}
+
+# LINT, not a behaviour test: the prompt is gated behind [[ ! -t 0 ]], so the
+# 'read' call is unreachable without a pty harness. Kept as a narrow static
+# check rather than dropped, and scoped to 'read' as a command so an innocent
+# string like "read the docs" cannot trip it.
+@test "dev.zsh uses read -r for the interactive choice prompt" {
+    run grep -nE '^[[:space:]]*read[[:space:]]+[^-]' "$DEV_ZSH"
+    [ "$status" -ne 0 ]
 }
 
 # ─── Issue 4: DEV_AI_CMD validation rejects spaces ───
@@ -475,9 +594,6 @@ run_dev() {
 @test "dev reload does not print success when keybindings are skipped" {
     # When _dev_setup_popup_keybindings returns early (no tmux server),
     # reload should not print the success message
-    if tmux list-sessions &>/dev/null 2>&1; then
-        skip "tmux server is running, cannot test skip path"
-    fi
     run_dev reload
     [[ "$output" != *"Popup keybindings updated"* ]]
 }

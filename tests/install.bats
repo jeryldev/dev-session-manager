@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # Tests for install.sh
 
+export BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-60}"
+
 setup() {
     load test_helper
 
