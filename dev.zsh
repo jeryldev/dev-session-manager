@@ -32,6 +32,8 @@ typeset -gA _DEV_CFG_ENV=(
     key_kb DEV_KEY_KB
     key_git DEV_KEY_GIT
     key_new DEV_KEY_NEW
+    key_coordinator DEV_KEY_COORDINATOR
+    key_overview DEV_KEY_OVERVIEW
 )
 typeset -gA _DEV_CFG_DEFAULT=(
     ai_cmd claude
@@ -42,6 +44,8 @@ typeset -gA _DEV_CFG_DEFAULT=(
     key_kb k
     key_git g
     key_new N
+    key_coordinator S
+    key_overview O
 )
 
 _dev_config_file() {
@@ -360,14 +364,19 @@ _dev_sha1() {
 # a grid rebuilt after a reboot gets the same ones and each agent resumes its
 # own conversation. The session id is a SHA-1 shaped as a version-5 UUID,
 # which is what `claude --session-id` takes.
-_dev_stamp_workspace() {
-    local target="$1" wt_path="$2" repo="$3"
-    local path_hash="$(_dev_sha1 "$wt_path")" h="$(_dev_sha1 "dev-grid:${repo}:${wt_path}")"
+_dev_sid_for() {
+    local h="$(_dev_sha1 "$1")"
     local variant="$(( (16#${h[17]} & 3) | 8 ))"
     local sid="${h[1,8]}-${h[9,12]}-5${h[14,16]}-$(( [##16] variant ))${h[18,20]}-${h[21,32]}"
+    print -r -- "${(L)sid}"
+}
+
+_dev_stamp_workspace() {
+    local target="$1" wt_path="$2" repo="$3"
+    local path_hash="$(_dev_sha1 "$wt_path")"
     tmux set-option -w -t "$target" @dev_workspace "$wt_path"
     tmux set-option -w -t "$target" @dev_ws_id "$(_dev_slug "${wt_path:t}")-${path_hash[1,4]}"
-    tmux set-option -w -t "$target" @dev_agent_sid "${(L)sid}"
+    tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_sid_for "dev-grid:${repo}:${wt_path}")"
 }
 
 _dev_grid_build() {
@@ -688,7 +697,11 @@ _dev_grid_kill() {
         echo "  would kill ${grid_session} and $(_dev_plural ${#popups} popup)"
         return 0
     fi
+    # The overview first (D14): its panes are clients of the agent popups.
     local popup_id
+    for popup_id in "${popups[@]}"; do
+        [[ "$(tmux show-options -t "$popup_id" -qv @dev_overview 2>/dev/null)" == 1 ]] && tmux kill-session -t "$popup_id" 2>/dev/null
+    done
     for popup_id in "${popups[@]}"; do
         tmux kill-session -t "$popup_id" 2>/dev/null
     done
@@ -787,7 +800,8 @@ dev() {
             echo -e "${YELLOW}Popup keybindings (inside tmux):${NC}"
             local conflicts="$(tmux show-options -gqv @dev_key_conflicts 2>/dev/null)" setting k label held
             for setting label in key_agent "AI assistant ($(_dev_cfg ai_cmd))" key_kb "Kanban board (kb)" \
-                    key_git "Git UI (lazygit)" key_term "Terminal (shell)" key_new "New branch as a grid tab"; do
+                    key_git "Git UI (lazygit)" key_term "Terminal (shell)" key_new "New branch as a grid tab" \
+                    key_coordinator "Grid coordinator agent" key_overview "Overview of the grid's agents"; do
                 k="$(_dev_cfg "$setting")"
                 held=""
                 [[ ";${conflicts};" == *";${k}="* ]] && held="${${conflicts#*${k}=}%%;*}"
@@ -937,11 +951,23 @@ dev() {
                 start) shift 2; _dev_agent_start "$@" ;;
                 send) shift 2; _dev_agent_send "$@" ;;
                 status) _dev_agent_status "$3" ;;
+                overview)
+                    local here="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
+                    _dev_overview "$here" "$(tmux display-message -p '#{client_name}' 2>/dev/null)"
+                    ;;
                 *)
                     echo -e "${RED}Usage: dev agent start|send|status ...${NC}"
                     return 1
                     ;;
             esac
+            ;;
+
+        __coordinator)
+            _dev_coordinator "$2" "$3"
+            ;;
+
+        __overview)
+            _dev_overview "$2" "$3"
             ;;
 
         __agent)
@@ -1303,7 +1329,8 @@ _dev_plural() {
 # Text only dev's own bindings contain, the 2.3.x ones included: a key bound
 # to anything else is the user's, and dev leaves it alone.
 _dev_is_dev_binding() {
-    [[ "$1" == *"display-popup -w 90% -h 90% -b single"* || "$1" == *"grid add --prompt"* ]]
+    [[ "$1" == *"display-popup -w 90% -h 90% -b single"* || "$1" == *"grid add --prompt"* ||
+       "$1" == *" __coordinator "* || "$1" == *" __overview "* ]]
 }
 
 # The prefix-table line binding a key, or nothing. Matched by position after
@@ -1349,7 +1376,7 @@ _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${DEV_SCRIPT}|${SHELL}"
     _dev_has_command kb && parts+="|kb"
     _dev_has_command lazygit && parts+="|lazygit"
-    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new; do
+    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview; do
         parts+="|$(_dev_cfg "$key")"
     done
     print -r -- "$parts"
@@ -1375,6 +1402,8 @@ _dev_setup_popup_keybindings() {
         key_new "$(_dev_cfg key_new)"
         key_kb "$(_dev_cfg key_kb)"
         key_git "$(_dev_cfg key_git)"
+        key_coordinator "$(_dev_cfg key_coordinator)"
+        key_overview "$(_dev_cfg key_overview)"
     )
     local -a _dev_key_conflicts
     local name seen=" " bind_status=0
@@ -1387,7 +1416,7 @@ _dev_setup_popup_keybindings() {
         [[ " ${(v)wanted} " == *" ${bound} "* ]] || tmux unbind-key -T prefix "$bound"
     done
 
-    for name in key_term key_agent key_new key_kb key_git; do
+    for name in key_term key_agent key_new key_kb key_git key_coordinator key_overview; do
         if [[ "$seen" == *" ${wanted[$name]} "* ]]; then
             echo -e "${RED}Error: prefix ${wanted[$name]} is configured for two actions; ${name} is not bound${NC}" >&2
             wanted[$name]=""
@@ -1406,6 +1435,10 @@ _dev_setup_popup_keybindings() {
     if [[ -n "${wanted[key_kb]}" ]] && _dev_has_command kb; then
         _dev_bind_popup "${wanted[key_kb]}" "Kanban board" kb kb
     fi
+    [[ -n "${wanted[key_coordinator]}" ]] && _dev_bind_key "${wanted[key_coordinator]}" "Coordinator" \
+        run-shell "zsh ${(qq)DEV_SCRIPT} __coordinator '#{pane_id}' '#{client_name}'"
+    [[ -n "${wanted[key_overview]}" ]] && _dev_bind_key "${wanted[key_overview]}" "Overview" \
+        run-shell "zsh ${(qq)DEV_SCRIPT} __overview '#{pane_id}' '#{client_name}'"
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then
         _dev_bind_popup "${wanted[key_git]}" "Git UI" lg lazygit
     fi
@@ -1687,6 +1720,110 @@ _dev_agent_status() {
             printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "$index" "$name" "$branch" "$changes" "$agent" "${detail}${ctx:+ (ctx ${ctx}%)}"
         fi
     done
+}
+
+# ─── prefix S (the coordinator) and prefix O (the overview) ───
+
+# The repo of the grid a pane belongs to: its own session's stamp, the
+# coordinator's, or — inside a popup — that of the pane its workspace started
+# from. Empty outside a grid.
+_dev_grid_of_pane() {
+    local pane="$1" repo origin
+    repo="$(tmux display-message -p -t "$pane" '#{@dev_grid}' 2>/dev/null)"
+    [[ -n "$repo" ]] || repo="$(tmux display-message -p -t "$pane" '#{@dev_coordinator_of}' 2>/dev/null)"
+    if [[ -z "$repo" ]]; then
+        origin="$(tmux display-message -p -t "$pane" '#{@dev_origin}' 2>/dev/null)"
+        [[ -n "$origin" ]] && repo="$(tmux display-message -p -t "$origin" '#{@dev_grid}' 2>/dev/null)"
+    fi
+    print -r -- "$repo"
+}
+
+_dev_tell() {
+    local client="$1" message="$2"
+    if [[ -n "$client" ]]; then
+        tmux display-message -c "$client" "$message"
+    else
+        print -r -- "$message" >&2
+    fi
+}
+
+# One coordinator per grid: an ordinary agent, started in the repo root with
+# DEV_GRID set so its own `dev agent ...` calls find this grid from anywhere.
+# Stamped as a child of the grid, so `dev grid kill` takes it too.
+_dev_coordinator() {
+    local pane="$1" client="$2" repo grid_session name
+    repo="$(_dev_grid_of_pane "$pane")"
+    grid_session="$(_dev_grid_session "$repo")"
+    if [[ -z "$repo" || -z "$grid_session" ]]; then
+        _dev_tell "$client" "No grid here — run 'dev grid' in a repo first"
+        return 1
+    fi
+    name="coord-${grid_session#${DEV_SESSION_PREFIX}}"
+    if [[ "$(tmux display-message -p -t "$pane" '#{session_name}')" == "$name" ]]; then
+        _dev_tell "$client" "Already in the coordinator"
+        return 0
+    fi
+    # new-session is the lock: of two presses at once, one fails as a
+    # duplicate and simply opens what the other made.
+    if tmux new-session -d -s "$name" -c "$repo" -e "DEV_GRID=${repo}" 2>/dev/null; then
+        tmux set-option -t "=${name}:" @dev_parent "$(tmux display-message -p -t "=${grid_session}:" '#{session_id}')"
+        tmux set-option -t "=${name}:" @dev_coordinator_of "$repo"
+        tmux set-option -w -t "=${name}:" @dev_workspace "$repo"
+        tmux set-option -w -t "=${name}:" @dev_ws_id "$name"
+        tmux set-option -w -t "=${name}:" @dev_popup_kind coordinator
+        tmux set-option -w -t "=${name}:" @dev_agent_sid "$(_dev_sid_for "dev-grid:${repo}:coordinator")"
+        local coord_pane="$(tmux display-message -p -t "=${name}:" '#{pane_id}')"
+        tmux respawn-pane -k -t "$coord_pane" "zsh ${(qq)DEV_SCRIPT} __agent ${(qq)coord_pane}"
+    fi
+    [[ -n "$client" ]] && tmux display-popup -c "$client" -w 90% -h 90% -b single \
+        -T " coordinator · ${grid_session} " -E "tmux attach-session -t '=${name}'"
+    return 0
+}
+
+_dev_overview_popup_command() {
+    print -r -- "tmux attach-session -t '=${1}'; tmux kill-session -t '=${1}'"
+}
+
+# Builds the overview of a grid's running workspace agents and prints its
+# name: one read-only pane per agent, attached to the very sessions the tabs
+# use. Read-only, because it is for watching; prefix a in a tab is for work.
+_dev_overview_build() {
+    local pane="$1" repo grid_session name ws_id agent
+    repo="$(_dev_grid_of_pane "$pane")"
+    grid_session="$(_dev_grid_session "$repo")"
+    if [[ -z "$repo" || -z "$grid_session" ]]; then
+        echo "No grid here — run 'dev grid' in a repo first" >&2
+        return 1
+    fi
+    local -a agents
+    for ws_id in ${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{@dev_ws_id}')"}; do
+        agent="$(_dev_agent_session_of "$ws_id")" && agents+=("$agent")
+    done
+    if (( ! ${#agents} )); then
+        echo "No workspace agents running in ${grid_session}" >&2
+        return 1
+    fi
+    name="overview-${grid_session#${DEV_SESSION_PREFIX}}"
+    tmux kill-session -t "=${name}" 2>/dev/null
+    tmux new-session -d -s "$name" -c "$repo" "TMUX= tmux attach-session -r -t ${(qq):-=${agents[1]}}"
+    for agent in "${agents[@]:1}"; do
+        tmux split-window -t "=${name}:" -c "$repo" "TMUX= tmux attach-session -r -t ${(qq):-=${agent}}"
+        tmux select-layout -t "=${name}:" tiled
+    done
+    tmux set-option -t "=${name}:" @dev_parent "$(tmux display-message -p -t "=${grid_session}:" '#{session_id}')"
+    tmux set-option -t "=${name}:" @dev_overview 1
+    print -r -- "$name"
+}
+
+_dev_overview() {
+    local pane="$1" client="$2" name
+    if ! name="$(_dev_overview_build "$pane" 2>&1)"; then
+        _dev_tell "$client" "$name"
+        return 1
+    fi
+    [[ -n "$client" ]] && tmux display-popup -c "$client" -w 95% -h 95% -b single \
+        -T " overview " -E "$(_dev_overview_popup_command "$name")"
+    return 0
 }
 
 # Run directly if executed (not sourced), set up keybindings if sourced

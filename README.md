@@ -98,6 +98,23 @@ dev grid prune          # close the tabs (and popups) of worktrees that were rem
 dev grid kill           # close the whole grid; each takes --dry-run
 ```
 
+### Agents in a grid
+
+Each tab's `prefix + a` agent can also be driven from the command line — by you, or by another agent:
+
+```bash
+dev agent status              # every tab: branch, changes, and whether its agent is working, idle,
+                              # waiting for an answer, dead, or not started (--json for scripts)
+dev agent start 2             # start tab 2's agent: the same one prefix + a opens
+dev agent send 2 "run the tests"         # typed, submitted, and confirmed to have arrived
+dev agent send 2 --file brief.md         # long briefs go by file; one short line points at it
+```
+
+`prefix + S` opens the grid's **coordinator**: one agent per grid, started in the repo root, whose job
+is to brief and check on the tab agents with `dev agent ...` (it finds its grid through `DEV_GRID`).
+`prefix + O` opens a read-only **overview** of every running tab agent, tiled; closing it closes it,
+so the agents go back to their full size.
+
 `prefix + N` does the same as `dev grid add`, asking for the branch in a small popup. A grid holds up to
 9 tabs, so `prefix + 1`-`9` always reaches them.
 
@@ -198,11 +215,13 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + g` | Git UI | lazygit |
 | `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
 | `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
+| `prefix + S` | The grid's coordinator agent | one per grid |
+| `prefix + O` | Overview of the grid's agents | read-only, closed when dismissed |
 
 All popups open at 90% x 90% with a single border.
 
 Every key is configurable (`dev config set key_agent V`; also `key_term`, `key_git`, `key_kb`,
-`key_new`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
+`key_new`, `key_coordinator`, `key_overview`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
 keys it skipped, and `dev help` marks them `not bound`.
 
 ### Setup
