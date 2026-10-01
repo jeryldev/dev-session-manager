@@ -282,3 +282,33 @@ agent_command() {
     press "$(tmux list-panes -a -F '#{pane_id}' | head -1)" j
     [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 }
+
+@test "a grid tab's popups start in its workspace, wherever its shell has gone" {
+    # Like its agent: a popup is named after the tab's workspace, so it must
+    # open there; a cd into another project must not make tab 2's lazygit
+    # that project's lazygit from then on.
+    grid_with_feat
+    local pane; pane="$(pane_of '=dev-myrepo-grid:2')"
+    tmux respawn-pane -k -t "$pane" -c /
+    press '=dev-myrepo-grid:2' j
+    local popup; popup="$(tmux list-sessions -F '#{session_name}' | grep '^term-')"
+    local i; for i in 1 2 3 4 5 6 7 8 9 10; do
+        [ "$(tmux display-message -p -t "=${popup}:" '#{pane_current_path}')" = "$CODE/myrepo-feat" ] && break
+        sleep 0.2
+    done
+    [ "$(tmux display-message -p -t "=${popup}:" '#{pane_current_path}')" = "$CODE/myrepo-feat" ]
+}
+
+@test "outside a grid a popup still starts where the shell is" {
+    start_isolated_server dev-plain
+    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    tmux respawn-pane -k -t "$(pane_of '=dev-plain:')" -c /tmp
+    press '=dev-plain:' j
+    local popup; popup="$(tmux list-sessions -F '#{session_name}' | grep '^term-')"
+    local i real; real="$(cd /tmp && pwd -P)"
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        [ "$(tmux display-message -p -t "=${popup}:" '#{pane_current_path}')" = "$real" ] && break
+        sleep 0.2
+    done
+    [ "$(tmux display-message -p -t "=${popup}:" '#{pane_current_path}')" = "$real" ]
+}

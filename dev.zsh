@@ -1840,11 +1840,15 @@ _dev_agent_origin() {
     print -r -- "$pane"
 }
 
-# What a popup runs: change to the directory the key was pressed in, read
-# from tmux as data, then run the popup's tool.
+# What a popup runs: change directory, then run the popup's tool. In a grid
+# tab that is the tab's workspace, as for its agent: the popup is named after
+# the workspace, and a shell that cd'd into another project must not make this
+# tab's lazygit that project's from then on. Elsewhere it is where the key was
+# pressed. Both are read from tmux as data.
 _dev_popup_in() {
     local pane="$1" cmd="$2" dir
-    dir="$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)"
+    dir="$(_dev_text_get -w -t "$(_dev_agent_origin "$pane")" @dev_workspace)"
+    [[ -n "$dir" && -d "$dir" ]] || dir="$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)"
     [[ -n "$dir" ]] && cd -- "$dir" 2>/dev/null
     exec sh -c "$cmd"
 }
