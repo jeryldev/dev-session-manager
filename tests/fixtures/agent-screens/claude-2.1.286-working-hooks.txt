@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.286
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/code/dev-session-manager
+
+  Get to finished work sooner with Opus 5.5. Switch anytime with /model.
+
+❯ Reply with only the word ok. Do not use any tools.
+
+✻ Julienning… (running UserPromptSubmit hooks… 2/3 · 0s)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  dev-session-manager (phase-4/workspace-identity) Opus 5.5
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

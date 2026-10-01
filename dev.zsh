@@ -756,6 +756,9 @@ dev() {
             echo -e "  ${BLUE}dev clean${NC}          Remove popups whose session is gone"
             echo -e "  ${BLUE}dev${NC}                In a git repo: same as dev grid"
             echo -e "  ${BLUE}dev config list${NC}    Settings, and where each comes from"
+            echo -e "  ${BLUE}dev agent status${NC}   Each grid tab's agent: working, idle, waiting, dead"
+            echo -e "  ${BLUE}dev agent start <t>${NC} Start tab t's agent (the one prefix a opens)"
+            echo -e "  ${BLUE}dev agent send <t>${NC}  Brief tab t's agent and confirm it arrived"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
@@ -924,6 +927,21 @@ dev() {
 
         config)
             _dev_config "$2" "$3" "$4"
+            ;;
+
+        agent)
+            if ! _dev_check_tmux; then
+                return 1
+            fi
+            case "$2" in
+                start) shift 2; _dev_agent_start "$@" ;;
+                send) shift 2; _dev_agent_send "$@" ;;
+                status) _dev_agent_status "$3" ;;
+                *)
+                    echo -e "${RED}Usage: dev agent start|send|status ...${NC}"
+                    return 1
+                    ;;
+            esac
             ;;
 
         __agent)
@@ -1140,12 +1158,21 @@ _dev_validate_ai_cmd() {
 # again without copying paths through sh. The id is single-quoted because sh
 # reads `$1` as a positional parameter. '=' makes every lookup exact: tmux
 # otherwise prefix-matches, and term-x-0-edit would find term-x-0-edit2.
+#
+# Pass "nodisplay" as the fourth argument to create the popup's session
+# without showing it: `dev agent start` makes exactly what the key would.
 _dev_popup_script() {
-    local prefix="$1" cmd="$2" suffix="${3:+-$3}"
+    local prefix="$1" cmd="$2" suffix="${3:+-$3}" display="${4:-display}"
     local slug='[^a-zA-Z0-9_-]/-/'
     local key='#{?#{@dev_ws_id},#{@dev_ws_id},#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}}'
     local origin='#{?#{@dev_origin},#{@dev_origin},#{pane_id}}'
-    print -r -- 'SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'"; tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""'
+    local create='SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
+    local show='; tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""'
+    if [[ "$display" == nodisplay ]]; then
+        print -r -- "$create"
+    else
+        print -r -- "${create}${show}"
+    fi
 }
 
 # The session-closed hook that reaps a closed session's popups. Pure sh and
@@ -1225,6 +1252,10 @@ _dev_agent_command() {
     [[ -n "$ai_cmd" ]] || ai_cmd="$(_dev_agent_cfg ai_cmd)"
     local ai_args="$(_dev_agent_cfg ai_args)"
     [[ -z "$ai_args" && "$ai_cmd" == claude ]] && ai_args="--enable-auto-mode"
+    # Flags given to `dev agent start <ws> -- ...` for this workspace.
+    local extra="$(tmux display-message -p -t "$pane" '#{@dev_agent_args}')"
+    ai_args="${ai_args}${extra:+ $extra}"
+    ai_args="${ai_args# }"
     local launch="$(_dev_agent_cfg agent_launch_cmd)" ssh_key="$(_dev_agent_cfg ssh_key)"
 
     local out=""
@@ -1256,8 +1287,12 @@ _dev_agent_command() {
 }
 
 _dev_agent_exec() {
-    local cmd
+    local cmd origin
     cmd="$(_dev_agent_command "$1")" || return 1
+    # Marks the workspace as having had an agent, so status can tell a dead
+    # one from one never started.
+    origin="$(tmux display-message -p -t "$1" '#{@dev_origin}' 2>/dev/null)"
+    tmux set-option -w -t "${origin:-$1}" @dev_agent_started 1 2>/dev/null
     exec sh -c "$cmd"
 }
 
@@ -1378,6 +1413,280 @@ _dev_setup_popup_keybindings() {
     tmux set-option -g @dev_key_conflicts "${(j:;:)_dev_key_conflicts}"
     tmux set-option -g @dev_bind_sig "$signature"
     _dev_has_command kb && _dev_has_command lazygit && (( ! bind_status ))
+}
+
+# ─── Workspace agents: dev agent start / send / status ───
+
+# What an agent's screen says it is doing: working, idle, waiting or unknown.
+# Read from claude 2.1.286's own screens (tests/fixtures/agent-screens); a
+# screen that matches none is unknown, never a guessed idle. Byte patterns, so
+# the multibyte spinner glyph matches in any locale.
+_dev_agent_screen_state() {
+    local screen="$(cat)" line prev=""
+    if [[ "$screen" == *"Enter to confirm"* ]]; then
+        print -r -- waiting
+        return
+    fi
+    for line in "${(@f)screen}"; do
+        # The spinner line: a glyph, then a capitalised word and an ellipsis
+        # ("✶ Julienning…"); the finished form ("✻ Cooked for 2s") has none.
+        if [[ "$line" =~ '^[^ ]{1,4} [A-Z][a-z]+…' ]]; then
+            print -r -- working
+            return
+        fi
+    done
+    for line in "${(@f)screen}"; do
+        # The input box: a rule, then the ❯ prompt.
+        if [[ "$prev" == ─* && "$line" == ❯* ]]; then
+            print -r -- idle
+            return
+        fi
+        prev="$line"
+    done
+    print -r -- unknown
+}
+
+_dev_agent_screen_ctx() {
+    local screen="$(cat)"
+    [[ "$screen" =~ 'ctx:([0-9]+)%' ]] && print -r -- "${match[1]}"
+}
+
+# The first line of a question an agent is waiting on, for status and watch.
+_dev_agent_screen_question() {
+    local line
+    for line in "${(@f)$(cat)}"; do
+        line="${line##[[:space:]]##}"
+        [[ "$line" == *"?"* ]] && { print -r -- "$line"; return; }
+    done
+}
+
+# Sets repo and grid_session in the caller. A coordinator carries DEV_GRID, so
+# its dev agent calls find their grid from any directory.
+_dev_agent_grid() {
+    if [[ -n "$DEV_GRID" ]]; then
+        repo="$DEV_GRID"
+        grid_session="$(_dev_grid_session "$repo")"
+        if [[ -z "$grid_session" ]]; then
+            echo -e "${RED}No grid for ${repo}${NC}"
+            return 1
+        fi
+    else
+        _dev_grid_locate
+    fi
+}
+
+# The tab index a workspace is named by: its tab number, label or path.
+_dev_agent_resolve() {
+    local ws="$1" index name workspace
+    local want_path="${ws:A}"
+    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{window_name}|#{@dev_workspace}')"})
+    local row
+    for row in "${rows[@]}"; do
+        IFS='|' read -r index name workspace <<< "$row"
+        if [[ -n "$workspace" && ( "$ws" == "$index" || "$ws" == "$name" || "$want_path" == "$workspace" ) ]]; then
+            print -r -- "$index"
+            return 0
+        fi
+    done
+    echo -e "${RED}Error: no workspace '${ws}' in ${grid_session}. Tabs:${NC}" >&2
+    for row in "${rows[@]}"; do
+        IFS='|' read -r index name workspace <<< "$row"
+        echo "  ${index} ${name}" >&2
+    done
+    return 1
+}
+
+# The session running a workspace's agent, found by stamp, never by name.
+_dev_agent_session_of() {
+    local ws_id="$1" name kind id
+    [[ -n "$ws_id" ]] || return 1
+    tmux list-windows -a -F '#{session_name}|#{@dev_popup_kind}|#{@dev_ws_id}' 2>/dev/null |
+        while IFS='|' read -r name kind id; do
+            [[ "$kind" == ai && "$id" == "$ws_id" ]] && { print -r -- "$name"; return 0; }
+        done
+    return 1
+}
+
+_dev_agent_start() {
+    local ws="$1" brief=""
+    shift
+    local -a extra
+    while (( $# )); do
+        case "$1" in
+            --brief) brief="$2"; shift 2 ;;
+            --) shift; extra=("$@"); break ;;
+            *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+        esac
+    done
+    if [[ -z "$ws" ]]; then
+        echo -e "${RED}Usage: dev agent start <tab|label|path> [--brief <file>] [-- <agent flags>]${NC}"
+        return 1
+    fi
+    local repo grid_session index
+    _dev_agent_grid || return 1
+    index="$(_dev_agent_resolve "$ws")" || return 1
+    local target="=${grid_session}:${index}"
+    local ws_id="$(tmux show-options -w -t "$target" -qv @dev_ws_id)"
+    local running
+    if running="$(_dev_agent_session_of "$ws_id")"; then
+        echo -e "${BLUE}Agent for tab ${index} already running (${running})${NC}"
+        [[ -n "$brief" ]] && _dev_agent_send "$index" --file "$brief"
+        return 0
+    fi
+    if (( ${#extra} )); then
+        tmux set-option -w -t "$target" @dev_agent_args "${(j: :)${(qq)extra[@]}}"
+    fi
+    local pane="$(tmux display-message -p -t "$target" '#{pane_id}')"
+    tmux run-shell -t "$pane" "$(_dev_popup_script ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)" nodisplay)"
+    tmux set-option -w -t "$target" @dev_agent_started 1
+
+    # A launcher that fails ends the session at once. Say so: a dead agent
+    # that looks started is the silent failure this command exists to stop.
+    local i
+    for i in 1 2 3 4 5 6 7 8; do
+        sleep 0.2
+        running="$(_dev_agent_session_of "$ws_id")" || {
+            echo -e "${RED}Error: the agent for tab ${index} exited as soon as it started${NC}"
+            echo -e "${YELLOW}Check ai_cmd / agent_launch_cmd with 'dev config list'${NC}"
+            return 1
+        }
+    done
+    echo -e "${GREEN}✓ Agent for tab ${index} started (${running})${NC}"
+    [[ -n "$brief" ]] && _dev_agent_send "$index" --file "$brief"
+    return 0
+}
+
+# Whether a message reached the agent: its first characters are on screen,
+# and not only in the input box. claude (and agents like it) moves a submitted
+# line into the transcript and empties the prompt; text still on the last
+# `❯` line was typed but not taken. Agents without a ❯ prompt only need the
+# text to appear.
+_dev_agent_receipt() {
+    local screen="$1" snippet="$2" line last_prompt=""
+    [[ "$screen" == *"$snippet"* ]] || return 1
+    for line in "${(@f)screen}"; do
+        [[ "$line" == ❯* ]] && last_prompt="$line"
+    done
+    [[ "$last_prompt" != *"$snippet"* ]]
+}
+
+_dev_agent_send() {
+    local ws="$1" file="" confirm=1 timeout=15
+    shift
+    local -a words
+    while (( $# )); do
+        case "$1" in
+            --file) file="$2"; shift 2 ;;
+            --no-confirm) confirm=0; shift ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            *) words+=("$1"); shift ;;
+        esac
+    done
+    local text="${(j: :)words}"
+    if [[ -z "$ws" || ( -z "$file" && -z "$text" ) ]]; then
+        echo -e "${RED}Usage: dev agent send <tab|label|path> (--file <brief> | <text>) [--no-confirm] [--timeout <s>]${NC}"
+        return 1
+    fi
+    local repo grid_session index session
+    _dev_agent_grid || return 1
+    index="$(_dev_agent_resolve "$ws")" || return 1
+    local ws_id="$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_ws_id)"
+    # Never starts one implicitly: a brief to the wrong, fresh agent is worse
+    # than an error.
+    if ! session="$(_dev_agent_session_of "$ws_id")"; then
+        echo -e "${RED}Error: no agent running for tab ${index}; start one with 'dev agent start ${index}'${NC}"
+        return 1
+    fi
+
+    # Long or multi-line text arrives truncated when pasted into an agent's
+    # input, so it goes to a file and one short line points at it.
+    local line
+    if [[ -n "$file" ]]; then
+        if [[ ! -r "$file" ]]; then
+            echo -e "${RED}Error: cannot read ${file}${NC}"
+            return 1
+        fi
+        line="Read and follow the instructions in ${file:A}"
+    elif (( ${#text} > 500 )) || [[ "$text" == *$'\n'* ]]; then
+        local dir="${XDG_STATE_HOME:-$HOME/.local/state}/dev-session-manager/briefs"
+        mkdir -p "$dir" || return 1
+        file="${dir}/${ws_id}-$(date +%Y%m%d-%H%M%S)-$$.md"
+        print -r -- "$text" > "$file" || return 1
+        line="Read and follow the instructions in ${file}"
+    else
+        line="$text"
+    fi
+
+    local pane="$(tmux display-message -p -t "=${session}:" '#{pane_id}')"
+    # Text and Enter are separate key events: text sent with its Enter in one
+    # call can sit in the input box unsubmitted. Each send is checked: tmux can
+    # refuse one ("no current client") and carry on.
+    if ! tmux send-keys -t "$pane" -l -- "$line" || ! tmux send-keys -t "$pane" Enter; then
+        echo -e "${RED}Error: could not type into tab ${index}'s agent (tmux send-keys failed)${NC}"
+        return 1
+    fi
+    if (( ! confirm )); then
+        echo -e "${YELLOW}Sent to tab ${index} (unconfirmed)${NC}"
+        return 0
+    fi
+    local snippet="${line[1,40]}" i
+    for (( i = 0; i < timeout * 4; i++ )); do
+        if _dev_agent_receipt "$(tmux capture-pane -p -J -t "$pane")" "$snippet"; then
+            echo -e "${GREEN}✓ Delivered to tab ${index}${NC}"
+            return 0
+        fi
+        sleep 0.25
+    done
+    echo -e "${RED}✗ Not confirmed: the message did not appear in tab ${index}'s agent within ${timeout}s${NC}"
+    return 1
+}
+
+_dev_json_str() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\t'/\\t}"
+    value="${value//[[:cntrl:]]/}"
+    print -rn -- "\"${value}\""
+}
+
+_dev_agent_status() {
+    local json=0
+    [[ "$1" == "--json" ]] && json=1
+    local repo grid_session
+    _dev_agent_grid || return 1
+    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{window_name}|#{@dev_workspace}|#{@dev_ws_id}|#{@dev_agent_started}')"})
+    local row index name workspace ws_id started branch changes agent detail ctx session screen width=9
+    for row in "${rows[@]}"; do
+        name="${${row#*|}%%|*}"
+        (( ${#name} > width )) && width=${#name}
+    done
+    (( json )) || printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "#" "workspace" "branch" "state" "agent" "detail"
+    for row in "${rows[@]}"; do
+        IFS='|' read -r index name workspace ws_id started <<< "$row"
+        [[ -n "$workspace" ]] || continue
+        branch="$(git -C "$workspace" branch --show-current 2>/dev/null)"
+        [[ -n "$branch" ]] || branch="(detached $(git -C "$workspace" rev-parse --short HEAD 2>/dev/null))"
+        changes=$(git -C "$workspace" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        detail="" ctx=""
+        if session="$(_dev_agent_session_of "$ws_id")"; then
+            screen="$(tmux capture-pane -p -t "=${session}:" 2>/dev/null)"
+            agent="$(print -r -- "$screen" | _dev_agent_screen_state)"
+            ctx="$(print -r -- "$screen" | _dev_agent_screen_ctx)"
+            [[ "$agent" == waiting ]] && detail="$(print -r -- "$screen" | _dev_agent_screen_question)"
+        elif [[ "$started" == 1 ]]; then
+            agent=dead
+        else
+            agent=none
+        fi
+        if (( json )); then
+            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${changes},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null}}"
+        else
+            (( changes )) && changes="${changes} changed" || changes="clean"
+            printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "$index" "$name" "$branch" "$changes" "$agent" "${detail}${ctx:+ (ctx ${ctx}%)}"
+        fi
+    done
 }
 
 # Run directly if executed (not sourced), set up keybindings if sourced
