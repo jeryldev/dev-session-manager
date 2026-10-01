@@ -394,3 +394,28 @@ prefix_key() { tmux list-keys -T prefix | awk -v k="$1" '$4 == k'; }
     zsh -c "source '$DEV_ZSH'" </dev/null
     [[ "$(prefix_key N)" == *"$DEV_ZSH"* ]]
 }
+
+# ─── Bare `dev` in a repo (US-36, D22) ───
+
+run_bare_dev() {
+    run zsh -c "cd '$1' && source '$DEV_ZSH' 2>/dev/null; dev" </dev/null
+}
+
+@test "dev alone inside a repo builds its grid" {
+    # US-36.1
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_bare_dev "$repo"
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "dev alone inside a worktree reuses the main repo's grid" {
+    # US-36.2/36.3
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    run_bare_dev "$CODE/myrepo-feat"
+    [[ "$output" == *"Attaching to grid: myrepo-grid"* ]]
+    [ "$(tmux list-sessions | grep -c grid)" -eq 1 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}

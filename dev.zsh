@@ -450,6 +450,7 @@ dev() {
             echo -e "  ${BLUE}dev ls --all${NC}       ...and the popup sessions under each"
             echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session and its popups"
             echo -e "  ${BLUE}dev clean${NC}          Remove popups whose session is gone"
+            echo -e "  ${BLUE}dev${NC}                In a git repo: same as dev grid"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
@@ -717,8 +718,15 @@ dev() {
             ;;
 
         "")
+            # Inside a repo the shortest command opens its grid.
+            if _dev_repo_root &>/dev/null; then
+                _dev_check_tmux || return 1
+                _dev_grid_build
+                return
+            fi
             echo -e "${RED}Usage: dev <command> [args]${NC}"
             echo -e "${YELLOW}Run 'dev help' for more information${NC}"
+            echo -e "${YELLOW}Run 'dev' alone inside a git repo to open its grid${NC}"
             return 1
             ;;
 

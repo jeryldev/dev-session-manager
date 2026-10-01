@@ -681,11 +681,14 @@ sys.exit(proc.wait())
 
 # ─── dev (empty) ───
 
-@test "dev with no args shows usage error" {
-    run_dev
+@test "dev with no args outside a repo shows usage error" {
+    # Inside a repo, bare dev opens its grid (D22, tests/grid.bats). The
+    # suite's own directory is a repo, so this runs from one that is not.
+    run zsh -c "cd '$HOME/code' && source '$DEV_ZSH' 2>/dev/null; dev" </dev/null
     [ "$status" -ne 0 ]
     [[ "$output" == *"Usage"* ]]
     [[ "$output" == *"dev help"* ]]
+    [[ "$output" == *"inside a git repo"* ]]
 }
 
 # ─── dev ls ───
