@@ -4,8 +4,9 @@ A lightweight zsh utility for quickly bootstrapping tmux development sessions wi
 
 ## Features
 
-- **Quick session creation**: `dev myproject` creates a full 7-window tmux session
-- **Pre-configured windows**: frontend, backend, database, testing, editor, scratch, extra
+- **Workspace grid**: `dev` inside a git repo opens one tab per worktree, so each branch gets its own window and its own AI popup
+- **Quick session creation**: `dev myproject` creates a 4-window tmux session
+- **Configurable windows**: editor, server, test, shell by default; set `DEV_WINDOWS` to change them
 - **Session management**: list, attach, and kill sessions easily
 - **Prerequisite checking**: shows checkmarks for installed dependencies
 - **Built-in references**: tmux keybindings cheatsheet
@@ -69,7 +70,37 @@ source ~/.zshrc
 dev myproject
 ```
 
-This creates a tmux session named `dev-myproject` with 7 windows and attaches to it.
+This creates a tmux session named `dev-myproject` with 4 windows and attaches to it.
+
+### Work on several branches at once
+
+```bash
+cd ~/code/myrepo
+dev                     # or: dev grid
+```
+
+Inside a git repo, `dev` on its own opens that repo's grid: a tmux session named `dev-myrepo-grid`
+with one tab per git worktree, the main checkout first. Each tab starts in its worktree, and
+`prefix + a` in a tab opens that tab's own AI session. Run it from any worktree of the repo and it
+finds the same grid; run it in another repo and you get that repo's grid.
+
+```bash
+dev grid add fix-login  # new worktree for the branch, opened as the next tab
+dev grid status         # each tab's branch and uncommitted changes
+```
+
+`prefix + N` does the same as `dev grid add`, asking for the branch in a small popup. A grid holds up to
+9 tabs, so `prefix + 1`-`9` always reaches them.
+
+To create workspaces with your own tool instead of `git worktree add` — one that also sets up a
+database or ports, for example — export a command; `{branch}` is replaced (quoted) with the branch name,
+and the command's last line of output must be the new worktree's path:
+
+```bash
+export DEV_WORKTREE_CREATE_CMD='bin/agent-grid slot create {branch}'
+```
+
+If that command fails, no tab is added and dev does not fall back to `git worktree add`.
 
 ### List sessions
 
@@ -125,19 +156,25 @@ dev version
 
 ## Session layout
 
-When you create a session with `dev <name>`, it creates 7 windows:
+When you create a session with `dev <name>`, it creates 4 windows:
 
-| Window | Name     | Purpose                   |
-|--------|----------|---------------------------|
-| 1      | frontend | Frontend dev server       |
-| 2      | backend  | Backend/API server        |
-| 3      | database | Database connections      |
-| 4      | testing  | Running tests             |
-| 5      | editor   | Code editor (starts here) |
-| 6      | scratch  | Scratch/notes             |
-| 7      | extra    | Extra terminal            |
+| Window | Name   | Purpose                   |
+|--------|--------|---------------------------|
+| 1      | editor | Code editor (starts here) |
+| 2      | server | Dev server                |
+| 3      | test   | Running tests             |
+| 4      | shell  | Anything else             |
 
-All windows start in your `$DEV_HOME_DIR` (defaults to `~/code`).
+All windows start in your `$DEV_HOME_DIR` (defaults to `~/code`). To use your own list, set
+`DEV_WINDOWS` to comma-separated names (letters, numbers, `-` and `_`; at most 9):
+
+```bash
+export DEV_WINDOWS=code,logs,shell
+```
+
+Versions before 2.4 created 7 windows (frontend, backend, database, testing, editor, scratch, extra);
+`export DEV_WINDOWS=frontend,backend,database,testing,editor,scratch,extra` brings that back, opening
+on frontend.
 
 ## Popup windows (v2.1)
 
@@ -151,6 +188,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + k` | Kanban board | kb |
 | `prefix + g` | Git UI | lazygit |
 | `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
+| `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
 
 All popups open at 90% x 90% with a single border.
 

@@ -98,35 +98,67 @@ run_dev() {
 
 # ─── B8: advertised window numbers must exist (US-1) ───
 
-# `dev help` advertises windows 1-7 and `prefix 1` must reach frontend, on any
-# config (US-1.1, US-1.2). The code used to hardcode -t <session>:2..:7 while
-# new-session put the first window at the server's base-index: on a stock config
-# (base-index 0) that gave 0,2,3,4,5,6,7 and `prefix 1` reached nothing.
-assert_windows_one_to_seven() {
-    run tmux list-windows -t "$1" -F '#{window_index}:#{window_name}'
+# `prefix N` must reach window N on any config (US-37.7, formerly US-1): the
+# code used to hardcode -t <session>:2..:7 while new-session put the first
+# window at the server's base-index, so a stock config (base-index 0) gave
+# 0,2,3,... and `prefix 1` reached nothing.
+assert_default_windows() {
+    run tmux list-windows -t "=$1:" -F '#{window_index}:#{window_name}'
     [ "$status" -eq 0 ]
-    [ "$output" = $'1:frontend\n2:backend\n3:database\n4:testing\n5:editor\n6:scratch\n7:extra' ]
+    [ "$output" = $'1:editor\n2:server\n3:test\n4:shell' ]
 }
 
-@test "dev <name> numbers its windows 1-7 on a stock config (base-index 0)" {
+@test "dev <name> makes four windows numbered from 1 on a stock config" {
+    # US-37.1/37.7 (D23)
     create_dev_session layout
     [ "$(tmux show-option -gv base-index)" = "0" ]
-    assert_windows_one_to_seven dev-layout
+    assert_default_windows dev-layout
 }
 
-@test "dev <name> numbers its windows 1-7 under base-index 1" {
+@test "dev <name> makes four windows numbered from 1 under base-index 1" {
     start_isolated_server
     tmux set-option -g base-index 1
     create_dev_session layout
-    assert_windows_one_to_seven dev-layout
+    assert_default_windows dev-layout
 }
 
-@test "dev <name> opens on the editor window, whatever its index" {
-    # 'Starts at window 5 (editor)' is only true when base-index is 1.
+@test "dev <name> opens on the editor window" {
     create_dev_session startwin
-    run tmux display-message -p -t dev-startwin '#{window_name}'
-    [ "$status" -eq 0 ]
+    run tmux display-message -p -t '=dev-startwin:' '#{window_name}'
     [ "$output" = "editor" ]
+}
+
+@test "DEV_WINDOWS replaces the windows, and the session opens on the first" {
+    # US-37.2
+    export DEV_WINDOWS="code,logs"
+    create_dev_session custom
+    run tmux list-windows -t '=dev-custom:' -F '#{window_index}:#{window_name}'
+    [ "$output" = $'1:code\n2:logs' ]
+    [ "$(tmux display-message -p -t '=dev-custom:' '#{window_name}')" = "code" ]
+}
+
+@test "an empty DEV_WINDOWS means the default four" {
+    # US-37.4
+    export DEV_WINDOWS=""
+    create_dev_session empty
+    assert_default_windows dev-empty
+}
+
+@test "a window name tmux cannot target is refused before anything is built" {
+    # US-37.3
+    export DEV_WINDOWS="code,my.logs"
+    run_dev bad
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"my.logs"* ]]
+    ! tmux has-session -t '=dev-bad' 2>/dev/null
+}
+
+@test "more than nine windows is refused" {
+    # US-37.5: prefix 1-9.
+    export DEV_WINDOWS="a,b,c,d,e,f,g,h,i,j"
+    run_dev many
+    [ "$status" -ne 0 ]
+    ! tmux has-session -t '=dev-many' 2>/dev/null
 }
 
 # ─── B1: popup target quoting ───
@@ -591,11 +623,14 @@ sys.exit(proc.wait())
     [[ "$output" == *"Prefix j"* ]]
 }
 
-@test "dev help shows session layout" {
+@test "dev help shows the windows actually in effect" {
+    # US-37.6
     run_dev help
-    [[ "$output" == *"frontend"* ]]
-    [[ "$output" == *"backend"* ]]
-    [[ "$output" == *"editor"* ]]
+    [[ "$output" == *"1. editor"*"2. server"*"3. test"*"4. shell"* ]]
+    export DEV_WINDOWS="code,logs"
+    run_dev help
+    [[ "$output" == *"1. code"*"2. logs"* ]]
+    [[ "$output" != *"frontend"* ]]
 }
 
 @test "dev -h is alias for help" {

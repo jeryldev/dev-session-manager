@@ -152,13 +152,13 @@ windows() { tmux list-windows -t "=$1:" -F '#{window_index} #{window_name}'; }
     # US-15.1/15.2/15.4
     local repo; repo="$(make_repo)"
     zsh -c "source '$DEV_ZSH' 2>/dev/null; dev myrepo-grid" </dev/null &>/dev/null || true
-    [ "$(tmux list-windows -t '=dev-myrepo-grid:' | wc -l | tr -d ' ')" -eq 7 ]
+    [ "$(tmux list-windows -t '=dev-myrepo-grid:' | wc -l | tr -d ' ')" -eq 4 ]
     run_grid "$repo"
     [ "$status" -ne 0 ]
     [[ "$output" == *"not a workspace grid"* ]]
     [[ "$output" == *"dev attach myrepo-grid"* ]]
     [[ "$output" == *"dev kill myrepo-grid"* ]]
-    [ "$(tmux list-windows -t '=dev-myrepo-grid:' | wc -l | tr -d ' ')" -eq 7 ]
+    [ "$(tmux list-windows -t '=dev-myrepo-grid:' | wc -l | tr -d ' ')" -eq 4 ]
 }
 
 @test "a grid stamped for another repo is refused" {

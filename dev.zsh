@@ -131,6 +131,25 @@ _dev_number_from_one() {
     [[ "$first_index" == "1" ]] || tmux move-window -s "=${session_name}:${first_index}" -t "=${session_name}:1"
 }
 
+# The windows `dev <name>` creates, one per line: DEV_WINDOWS (comma list) or
+# the default four. Checked before anything is built: a name tmux cannot
+# target would leave a half-made session, and prefix 1-9 reaches only nine.
+_dev_window_names() {
+    local -a names=(${(s:,:)${DEV_WINDOWS:-editor,server,test,shell}})
+    local name
+    for name in "${names[@]}"; do
+        if [[ -z "$name" || "$name" =~ [^a-zA-Z0-9_-] ]]; then
+            echo -e "${RED}Error: invalid window name in DEV_WINDOWS: '${name}' (letters, numbers, - and _ only)${NC}" >&2
+            return 1
+        fi
+    done
+    if (( ${#names} > 9 )); then
+        echo -e "${RED}Error: DEV_WINDOWS lists ${#names} windows; prefix 1-9 reaches nine${NC}" >&2
+        return 1
+    fi
+    print -l -- "${names[@]}"
+}
+
 _dev_slug() {
     print -r -- "${1//[^a-zA-Z0-9_-]/-}"
 }
@@ -465,17 +484,20 @@ dev() {
             echo -e "  ${BLUE}dev attach 1${NC}       Attach to 'dev-1'"
             echo -e "  ${BLUE}dev kill 1${NC}         Kill 'dev-1'"
             echo ""
-            echo -e "${YELLOW}Session layout (7 windows, all start at ${DEV_DEFAULT_DIR}):${NC}"
-            echo -e "  1. frontend   2. backend    3. database   4. testing"
-            echo -e "  5. ${GREEN}editor${NC}     6. scratch    7. extra"
-            echo ""
-            echo -e "${BLUE}Starts at window 5 (editor)${NC}"
+            local -a windows=(${(f)"$(_dev_window_names 2>/dev/null)"})
+            local layout="" i
+            for (( i = 1; i <= ${#windows}; i++ )); do
+                layout+="  ${i}. ${windows[i]}"
+            done
+            echo -e "${YELLOW}'dev <name>' windows (all start at ${DEV_DEFAULT_DIR}; set DEV_WINDOWS to change):${NC}"
+            echo -e "${layout}"
             echo ""
             echo -e "${YELLOW}Popup keybindings (inside tmux):${NC}"
             echo -e "  ${BLUE}Prefix a${NC}          AI assistant (claude)"
             echo -e "  ${BLUE}Prefix k${NC}          Kanban board (kb)"
             echo -e "  ${BLUE}Prefix g${NC}          Git UI (lazygit)"
             echo -e "  ${BLUE}Prefix j${NC}          Terminal (shell)"
+            echo -e "  ${BLUE}Prefix N${NC}          New branch as a grid tab"
             echo ""
             ;;
 
@@ -741,6 +763,9 @@ dev() {
                 return 1
             fi
 
+            local -a windows
+            windows=(${(f)"$(_dev_window_names)"}) || return 1
+
             local session_name=$(_dev_normalize_session_name "$1")
             local display_name=$(_dev_display_name "$session_name")
 
@@ -768,18 +793,15 @@ dev() {
             # Create new session
             echo -e "${GREEN}Creating session: ${display_name}${NC}"
 
-            tmux new-session -d -s "$session_name" -n "frontend" -c "$DEV_DEFAULT_DIR"
+            tmux new-session -d -s "$session_name" -n "${windows[1]}" -c "$DEV_DEFAULT_DIR"
             _dev_number_from_one "$session_name"
-            tmux new-window -t "$session_name:2" -n "backend" -c "$DEV_DEFAULT_DIR"
-            tmux new-window -t "$session_name:3" -n "database" -c "$DEV_DEFAULT_DIR"
-            tmux new-window -t "$session_name:4" -n "testing" -c "$DEV_DEFAULT_DIR"
-            tmux new-window -t "$session_name:5" -n "editor" -c "$DEV_DEFAULT_DIR"
-            tmux new-window -t "$session_name:6" -n "scratch" -c "$DEV_DEFAULT_DIR"
-            tmux new-window -t "$session_name:7" -n "extra" -c "$DEV_DEFAULT_DIR"
+            local i
+            for (( i = 2; i <= ${#windows}; i++ )); do
+                tmux new-window -t "=${session_name}:${i}" -n "${windows[i]}" -c "$DEV_DEFAULT_DIR"
+            done
+            tmux select-window -t "=${session_name}:1"
 
-            tmux select-window -t "${session_name}:editor"
-
-            _dev_attach_session "$session_name" "Created 7 windows, starting at editor"
+            _dev_attach_session "$session_name" "Created $(_dev_plural ${#windows} window), starting at ${windows[1]}"
             ;;
     esac
 }
