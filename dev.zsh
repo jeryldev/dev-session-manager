@@ -10,6 +10,9 @@
 # Version
 DEV_VERSION="2.3.0"
 
+# This file, sourced or executed: key bindings run it again from tmux.
+DEV_SCRIPT="${${(%):-%x}:A}"
+
 # Configuration
 DEV_SESSION_PREFIX="dev-"
 DEV_DEFAULT_DIR="${DEV_HOME_DIR:-$HOME/code}"
@@ -287,6 +290,10 @@ _dev_worktree_for_branch() {
 
 _dev_grid_add() {
     local branch="$1"
+    if [[ "$branch" == "--prompt" ]]; then
+        _dev_grid_add_prompt
+        return
+    fi
     if [[ -z "$branch" ]]; then
         echo -e "${RED}Usage: dev grid add <branch>${NC}"
         return 1
@@ -330,6 +337,22 @@ _dev_grid_add() {
     tmux set-option -w -t "=${grid_session}:${free}" @dev_workspace "$wt_path"
     _dev_grid_show_tab "$grid_session" "$free"
     echo -e "${GREEN}✓ ${branch} is tab ${free}${NC}"
+}
+
+# What prefix N runs in its popup. The branch is read as a line of text, so it
+# is only ever data; on failure the popup stays open long enough to read why.
+_dev_grid_add_prompt() {
+    local branch rc
+    print -n "Branch for the new tab: "
+    read -r branch || return 0
+    [[ -n "$branch" ]] || return 0
+    _dev_grid_add "$branch"
+    rc=$?
+    if (( rc )) && [[ -t 0 ]]; then
+        print -n "Press Enter to close "
+        read -r
+    fi
+    return $rc
 }
 
 # A configured command (bin/agent-grid, say, which also provisions a database
@@ -829,6 +852,17 @@ _dev_bind_popup() {
     tmux bind-key "$key" run-shell "$(_dev_popup_script "$@")"
 }
 
+# prefix N: a new branch as a new grid tab. Bound only if the key is free or
+# already ours: dev never takes a key someone else bound. The full table is
+# filtered because `list-keys -T prefix N` prints nothing on tmux 3.7b, bound
+# or not.
+_dev_bind_new_branch_key() {
+    local current="$(tmux list-keys -T prefix 2>/dev/null | awk '$4 == "N"')"
+    [[ -z "$current" || "$current" == *"grid add --prompt"* ]] || return 0
+    tmux bind-key N display-popup -E -w 60 -h 8 -b single -T " New branch tab " \
+        -d "#{pane_current_path}" zsh "$DEV_SCRIPT" grid add --prompt
+}
+
 _dev_setup_popup_keybindings() {
     tmux list-sessions &>/dev/null || return 1
     # A fixed index, not -ga: this runs on every shell start, and -ga would
@@ -839,6 +873,7 @@ _dev_setup_popup_keybindings() {
     if _dev_validate_ai_cmd; then
         _dev_bind_popup a ai "[ -f ~/.ssh/id_ed25519 ] && ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
     fi
+    _dev_bind_new_branch_key
     _dev_has_command kb && _dev_bind_popup k kb kb
     _dev_has_command lazygit && _dev_bind_popup g lg lazygit
 }

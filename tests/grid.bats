@@ -285,14 +285,16 @@ add_branch() {
 }
 
 @test "a branch name reaches the create command as data, never as code" {
-    # US-35.9 (corrected): git accepts ; $( ) ' | & and backticks in branch
+    # US-35.9 (corrected): git accepts ; $( ) ' | & > and backticks in branch
     # names, so this one is valid — and runs a command if left unquoted.
     local repo; repo="$(make_repo)"
     run_grid "$repo"
     export DEV_WORKTREE_CREATE_CMD="printf '%s' {branch} > $BATS_TEST_TMPDIR/got; mkdir -p $CODE/inj; echo $CODE/inj"
-    add_branch "$repo" "'x\$(touch\${IFS}$BATS_TEST_TMPDIR/pwned)'"
+    local payload="x\$(true>$BATS_TEST_TMPDIR/pwned)"
+    git check-ref-format --branch "$payload"
+    add_branch "$repo" "'$payload'"
     [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
-    [ "$(cat "$BATS_TEST_TMPDIR/got")" = "x\$(touch\${IFS}$BATS_TEST_TMPDIR/pwned)" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/got")" = "$payload" ]
 }
 
 @test "dev grid add rejects a name git would not accept as a branch" {
@@ -324,4 +326,71 @@ add_branch() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"No grid for"* ]]
     [ ! -d "$CODE/myrepo-fix-1" ]
+}
+
+# ─── Ctrl-p N (US-35.8, D20) ───
+
+# The key opens a popup that reads the branch with `read`, so typed text is
+# only ever data: tmux's command-prompt would paste it into a command and parse
+# it again, expanding $VAR on the way.
+prompt_add() {
+    local dir="$1" input="$2"
+    run zsh -c "cd '$dir' && source '$DEV_ZSH' 2>/dev/null; dev grid add --prompt" <<< "$input"
+}
+
+prefix_key() { tmux list-keys -T prefix | awk -v k="$1" '$4 == k'; }
+
+@test "the prompt adds the branch typed into it" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    prompt_add "$repo" fix-1
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-fix-1' ]
+}
+
+@test "the prompt with nothing typed creates nothing" {
+    # US-35.8
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    prompt_add "$repo" ""
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+@test "text typed into the prompt is never run" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    export DEV_WORKTREE_CREATE_CMD="mkdir -p $CODE/inj; echo $CODE/inj"
+    # Runs under sh and zsh alike (zsh does not split ${IFS}), and git
+    # accepts it as a branch — or the test would pass without reaching the
+    # code it guards.
+    local payload="x\$(true>$BATS_TEST_TMPDIR/pwned)"
+    git check-ref-format --branch "$payload"
+    prompt_add "$repo" "$payload"
+    [ "$status" -eq 0 ]
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}
+
+@test "prefix N opens the new-branch prompt in the current pane's directory" {
+    start_isolated_server
+    zsh -c "source '$DEV_ZSH'" </dev/null
+    local binding; binding="$(prefix_key N)"
+    [[ "$binding" == *"display-popup"* ]]
+    [[ "$binding" == *"#{pane_current_path}"* ]]
+    [[ "$binding" == *"$DEV_ZSH"*"grid add --prompt"* ]]
+}
+
+@test "prefix N is left alone when the user bound it" {
+    # D17: dev never takes a key someone else bound.
+    start_isolated_server
+    tmux bind-key N display-message mine
+    zsh -c "source '$DEV_ZSH'" </dev/null
+    [[ "$(prefix_key N)" == *"display-message mine"* ]]
+}
+
+@test "prefix N bound by an older dev is rebound" {
+    start_isolated_server
+    tmux bind-key N display-popup -E zsh /old/dev.zsh grid add --prompt
+    zsh -c "source '$DEV_ZSH'" </dev/null
+    [[ "$(prefix_key N)" == *"$DEV_ZSH"* ]]
 }
