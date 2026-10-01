@@ -192,6 +192,10 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 
 All popups open at 90% x 90% with a single border.
 
+Every key is configurable (`dev config set key_agent V`; also `key_term`, `key_git`, `key_kb`,
+`key_new`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
+keys it skipped, and `dev help` marks them `not bound`.
+
 ### Setup
 
 No extra configuration needed. Keybindings are set up automatically when `dev.zsh` is sourced inside a tmux session. Optional tools (kb, lazygit) are only bound if installed.
@@ -264,6 +268,7 @@ variable overrides the file for as long as it is set.
 | `ai_cmd` | `DEV_AI_CMD` | `claude` | AI tool for `prefix + a` (one word) |
 | `ai_args` | `DEV_AI_ARGS` | `--enable-auto-mode` for claude, none otherwise | Flags for the AI tool |
 | `ssh_key` | `DEV_SSH_KEY` | unset | Key to `ssh-add` before the AI tool starts |
+| `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N` | Popup keys (after `prefix`) |
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
 

@@ -27,11 +27,21 @@ typeset -gA _DEV_CFG_ENV=(
     windows DEV_WINDOWS
     worktree_create_cmd DEV_WORKTREE_CREATE_CMD
     agent_launch_cmd DEV_AGENT_LAUNCH_CMD
+    key_agent DEV_KEY_AGENT
+    key_term DEV_KEY_TERM
+    key_kb DEV_KEY_KB
+    key_git DEV_KEY_GIT
+    key_new DEV_KEY_NEW
 )
 typeset -gA _DEV_CFG_DEFAULT=(
     ai_cmd claude
     home_dir "$HOME/code"
     windows editor,server,test,shell
+    key_agent a
+    key_term j
+    key_kb k
+    key_git g
+    key_new N
 )
 
 _dev_config_file() {
@@ -84,6 +94,12 @@ _dev_config_check() {
         windows)
             DEV_WINDOWS="$value" _dev_window_names >/dev/null || return 1
             ;;
+        key_*)
+            if [[ ! "$value" =~ '^([CMS]-)*([A-Za-z0-9]|F[0-9]{1,2})$' ]]; then
+                echo -e "${RED}Error: '${value}' is not a tmux key (e.g. a, N, M-a, F5)${NC}"
+                return 1
+            fi
+            ;;
     esac
 }
 
@@ -119,7 +135,7 @@ _dev_config() {
             } > "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
             # A running server keeps what dev last published; refresh it so the
             # agent key sees the change without a new shell.
-            tmux list-sessions &>/dev/null && _dev_setup_popup_keybindings
+            tmux list-sessions &>/dev/null && _dev_setup_popup_keybindings force
             return 0
             ;;
         list)
@@ -657,11 +673,18 @@ dev() {
             echo -e "${layout}"
             echo ""
             echo -e "${YELLOW}Popup keybindings (inside tmux):${NC}"
-            echo -e "  ${BLUE}Prefix a${NC}          AI assistant (claude)"
-            echo -e "  ${BLUE}Prefix k${NC}          Kanban board (kb)"
-            echo -e "  ${BLUE}Prefix g${NC}          Git UI (lazygit)"
-            echo -e "  ${BLUE}Prefix j${NC}          Terminal (shell)"
-            echo -e "  ${BLUE}Prefix N${NC}          New branch as a grid tab"
+            local conflicts="$(tmux show-options -gqv @dev_key_conflicts 2>/dev/null)" setting k label held
+            for setting label in key_agent "AI assistant ($(_dev_cfg ai_cmd))" key_kb "Kanban board (kb)" \
+                    key_git "Git UI (lazygit)" key_term "Terminal (shell)" key_new "New branch as a grid tab"; do
+                k="$(_dev_cfg "$setting")"
+                held=""
+                [[ ";${conflicts};" == *";${k}="* ]] && held="${${conflicts#*${k}=}%%;*}"
+                if [[ -n "$held" ]]; then
+                    printf "  ${BLUE}%-17s${NC} %s ${YELLOW}(not bound: taken by %s; dev config set %s <key>)${NC}\n" "Prefix ${k}" "$label" "$held" "$setting"
+                else
+                    printf "  ${BLUE}%-17s${NC} %s\n" "Prefix ${k}" "$label"
+                fi
+            done
             echo ""
             ;;
 
@@ -845,7 +868,7 @@ dev() {
                 return 1
             fi
             echo -e "${BLUE}Reloading dev configuration...${NC}"
-            if _dev_setup_popup_keybindings; then
+            if _dev_setup_popup_keybindings force; then
                 echo -e "${GREEN}✓ Popup keybindings updated${NC}"
             else
                 echo -e "${YELLOW}⚠ Some keybindings were skipped${NC}"
@@ -1130,37 +1153,119 @@ _dev_plural() {
     (( $1 == 1 )) && print -r -- "$1 $2" || print -r -- "$1 ${2}s"
 }
 
+# Text only dev's own bindings contain, the 2.3.x ones included: a key bound
+# to anything else is the user's, and dev leaves it alone.
+_dev_is_dev_binding() {
+    [[ "$1" == *"display-popup -w 90% -h 90% -b single"* || "$1" == *"grid add --prompt"* ]]
+}
+
+# The prefix-table line binding a key, or nothing. Matched by position after
+# `-T prefix`, not by column: `bind-key -r -T prefix a ...` shifts the columns,
+# and a missed match would read as "free" and overwrite the user's key.
+_dev_prefix_binding() {
+    tmux list-keys -T prefix 2>/dev/null | awk -v k="$1" '{
+        for (i = 1; i < NF - 1; i++) if ($i == "-T" && $(i+1) == "prefix") { if ($(i+2) == k) print; break }
+    }'
+}
+
+_dev_prefix_binding_key() {
+    print -r -- "$1" | awk '{ for (i = 1; i < NF - 1; i++) if ($i == "-T" && $(i+1) == "prefix") { print $(i+2); break } }'
+}
+
+# Binds a prefix key unless someone else holds it; reports a conflict instead.
+# The full table is filtered: `list-keys -T prefix <key>` prints nothing on
+# tmux 3.7b, bound or not.
+_dev_bind_key() {
+    local key="$1" label="$2"
+    shift 2
+    local current="$(_dev_prefix_binding "$key")"
+    if [[ -n "$current" ]] && ! _dev_is_dev_binding "$current"; then
+        local held="${current#*${key} }"
+        held="${held##[[:space:]]#}"
+        _dev_key_conflicts+=("${key}=${held}")
+        echo -e "${YELLOW}⚠ prefix ${key} is already bound (${held}); ${label} is not bound. Set a free key with 'dev config set'.${NC}" >&2
+        return 0
+    fi
+    tmux bind-key "$key" "$@"
+}
+
 _dev_bind_popup() {
-    local key="$1"
-    shift
-    tmux bind-key "$key" run-shell "$(_dev_popup_script "$@")"
+    local key="$1" label="$2"
+    shift 2
+    _dev_bind_key "$key" "$label" run-shell "$(_dev_popup_script "$@")"
 }
 
-# prefix N: a new branch as a new grid tab. Bound only if the key is free or
-# already ours: dev never takes a key someone else bound. The full table is
-# filtered because `list-keys -T prefix N` prints nothing on tmux 3.7b, bound
-# or not.
-_dev_bind_new_branch_key() {
-    local current="$(tmux list-keys -T prefix 2>/dev/null | awk '$4 == "N"')"
-    [[ -z "$current" || "$current" == *"grid add --prompt"* ]] || return 0
-    tmux bind-key N display-popup -E -w 60 -h 8 -b single -T " New branch tab " \
-        -d "#{pane_current_path}" zsh "$DEV_SCRIPT" grid add --prompt
+# Everything binding depends on. A new shell on an unchanged machine finds the
+# same signature on the server and binds nothing; a brew upgrade, a newly
+# installed lazygit or a changed setting changes it and rebinds.
+_dev_binding_signature() {
+    local key parts="${DEV_VERSION}|${DEV_SCRIPT}|${SHELL}"
+    _dev_has_command kb && parts+="|kb"
+    _dev_has_command lazygit && parts+="|lazygit"
+    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new; do
+        parts+="|$(_dev_cfg "$key")"
+    done
+    print -r -- "$parts"
 }
 
+# Pass "force" to bind even when nothing changed (dev reload, dev config set).
 _dev_setup_popup_keybindings() {
+    setopt localoptions extendedglob
     tmux list-sessions &>/dev/null || return 1
-    # A fixed index, not -ga: this runs on every shell start, and -ga would
-    # append another reaper each time. Index 0, where a user's own hook lands,
-    # is left alone.
+    local signature="$(_dev_binding_signature)"
+    if [[ "$1" != force && "$(tmux show-options -gqv @dev_bind_sig 2>/dev/null)" == "$signature" ]]; then
+        return 0
+    fi
+
+    # A fixed index, not -ga: -ga would append another reaper on every
+    # rebind. Index 0, where a user's own hook lands, is left alone.
     tmux set-hook -g 'session-closed[99]' "$(_dev_reaper_hook)"
     _dev_publish_config
-    _dev_bind_popup j term "${SHELL:-zsh}"
-    if _dev_validate_ai_cmd; then
-        _dev_bind_popup a ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
+
+    local -A wanted=(
+        key_term "$(_dev_cfg key_term)"
+        key_agent "$(_dev_cfg key_agent)"
+        key_new "$(_dev_cfg key_new)"
+        key_kb "$(_dev_cfg key_kb)"
+        key_git "$(_dev_cfg key_git)"
+    )
+    local -a _dev_key_conflicts
+    local name seen=" " bind_status=0
+
+    # Release keys dev bound before that are no longer configured.
+    local line bound
+    tmux list-keys -T prefix 2>/dev/null | while IFS= read -r line; do
+        bound="$(_dev_prefix_binding_key "$line")"
+        _dev_is_dev_binding "$line" || continue
+        [[ " ${(v)wanted} " == *" ${bound} "* ]] || tmux unbind-key -T prefix "$bound"
+    done
+
+    for name in key_term key_agent key_new key_kb key_git; do
+        if [[ "$seen" == *" ${wanted[$name]} "* ]]; then
+            echo -e "${RED}Error: prefix ${wanted[$name]} is configured for two actions; ${name} is not bound${NC}" >&2
+            wanted[$name]=""
+            bind_status=1
+        fi
+        seen+="${wanted[$name]} "
+    done
+
+    [[ -n "${wanted[key_term]}" ]] && _dev_bind_popup "${wanted[key_term]}" Terminal term "${SHELL:-zsh}"
+    if [[ -n "${wanted[key_agent]}" ]] && _dev_validate_ai_cmd; then
+        _dev_bind_popup "${wanted[key_agent]}" "AI assistant" ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
     fi
-    _dev_bind_new_branch_key
-    _dev_has_command kb && _dev_bind_popup k kb kb
-    _dev_has_command lazygit && _dev_bind_popup g lg lazygit
+    [[ -n "${wanted[key_new]}" ]] && _dev_bind_key "${wanted[key_new]}" "New branch tab" \
+        display-popup -E -w 60 -h 8 -b single -T " New branch tab " \
+        -d "#{pane_current_path}" zsh "$DEV_SCRIPT" grid add --prompt
+    if [[ -n "${wanted[key_kb]}" ]] && _dev_has_command kb; then
+        _dev_bind_popup "${wanted[key_kb]}" "Kanban board" kb kb
+    fi
+    if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then
+        _dev_bind_popup "${wanted[key_git]}" "Git UI" lg lazygit
+    fi
+
+    tmux set-option -g @dev_key_conflicts "${(j:;:)_dev_key_conflicts}"
+    tmux set-option -g @dev_bind_sig "$signature"
+    _dev_has_command kb && _dev_has_command lazygit && (( ! bind_status ))
 }
 
 # Run directly if executed (not sourced), set up keybindings if sourced
