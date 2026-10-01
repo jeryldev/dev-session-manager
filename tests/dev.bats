@@ -131,19 +131,40 @@ assert_windows_one_to_seven() {
 
 # ─── B1: popup target quoting ───
 
-@test "the popup binding quotes its attach target" {
-    # tmux hands a display-popup -E payload to sh, which word-splits. A window
-    # renamed 'my work' makes SESSION contain a space, so an unquoted $SESSION
-    # becomes two arguments and the attach fails with 'too many arguments' —
-    # after new-session has already created (and leaked) the popup session.
-    # has-session and new-session already quote it; the attach does not.
-    start_isolated_server
-    zsh -c "source '$DEV_ZSH' 2>/dev/null" </dev/null
+@test "the popup script quotes its attach target" {
+    # tmux hands a display-popup -E payload to sh, which word-splits. An
+    # unquoted $SESSION holding a space becomes two arguments and the attach
+    # fails with 'too many arguments' — after new-session already created (and
+    # leaked) the popup session. Asserted on the script itself: list-keys
+    # re-escapes the binding, and slugging makes the space case unreachable
+    # end to end, so neither would show this bug.
+    local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script term sh" </dev/null)"
+    [[ "$script" == *'-E "tmux attach-session -t \"$SESSION\""'* ]]
+}
 
-    local cmd
-    cmd="$(tmux list-keys -T prefix | grep -E '^bind-key +-T prefix +j ' | sed 's/\\\\//g')"
-    [ -n "$cmd" ]
-    [[ "$cmd" == *'attach-session -t "$SESSION"'* ]]
+@test "the popup's attach command keeps a target with a space as one argument" {
+    # What sh makes of the -E payload, once the outer script has expanded it.
+    run sh -c 'SESSION="term-dev-x-1-my work"; payload="tmux attach-session -t \"$SESSION\""; eval "set -- $payload"; echo "$#|$4"'
+    [ "$status" -eq 0 ]
+    [ "$output" = "4|term-dev-x-1-my work" ]
+}
+
+@test "a popup opened twice from an oddly named window creates one session" {
+    # US-3.1/3.3: tmux creates sessions named with ':' or '.' and then cannot
+    # target them, so has-session misses and every press leaks another one.
+    # run-shell expands the #{...} formats the way a key press does.
+    start_isolated_server work
+    tmux rename-window -t work 'my api:v1.2'
+    local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script term sh" </dev/null)"
+    [ -n "$script" ]
+
+    tmux run-shell -t work "$script" 2>/dev/null || true
+    tmux run-shell -t work "$script" 2>/dev/null || true
+
+    run tmux list-sessions -F '#{session_name}'
+    local popups; popups="$(printf '%s\n' "$output" | grep '^term-')"
+    [ "$(printf '%s\n' "$popups" | grep -c .)" -eq 1 ]
+    [[ "$popups" =~ ^[a-zA-Z0-9_-]+$ ]]
 }
 
 # ─── _dev_has_command ───

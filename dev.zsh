@@ -398,10 +398,20 @@ _dev_validate_ai_cmd() {
     return 0
 }
 
+# The shell script a popup key runs. tmux expands its #{...} formats at key
+# press time, then hands it to sh. The window name is slugged there, not here:
+# it is only known at key press, and tmux cannot target a session whose name
+# holds ':' or '.'. The attach target is quoted because the -E payload is
+# word-split by sh, where an unquoted name with a space breaks the attach.
+_dev_popup_script() {
+    local prefix="$1" cmd="$2" suffix="${3:+-$3}"
+    print -r -- 'SESSION="'"${prefix}"'-#{session_name}-#{window_index}-#{s/[^a-zA-Z0-9_-]/-/:window_name}'"${suffix}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t \"$SESSION\""'
+}
+
 _dev_bind_popup() {
-    local key="$1" prefix="$2" cmd="$3" suffix="${4:+-$4}"
-    tmux bind-key "$key" run-shell \
-      'SESSION="'"${prefix}"'-#{session_name}-#{window_index}-#{window_name}'"${suffix}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
+    local key="$1"
+    shift
+    tmux bind-key "$key" run-shell "$(_dev_popup_script "$@")"
 }
 
 _dev_setup_popup_keybindings() {
