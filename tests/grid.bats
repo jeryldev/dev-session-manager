@@ -356,6 +356,9 @@ prefix_key() { tmux list-keys -T prefix | awk -v k="$1" '$4 == k'; }
     zsh -c "source '$DEV_ZSH'" </dev/null
     local binding; binding="$(prefix_key N)"
     [[ "$binding" == *"display-popup"* ]]
+    # Full size, like the other popups: provisioning a worktree prints a lot.
+    # tmux lists the flags in its own order, quoted.
+    [[ "$binding" == *'-h "90%"'* && "$binding" == *'-w "90%"'* ]]
     [[ "$binding" == *"#{pane_current_path}"* ]]
     [[ "$binding" == *"$DEV_ZSH"*"grid add --prompt"* ]]
 }

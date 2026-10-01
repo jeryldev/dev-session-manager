@@ -1765,8 +1765,12 @@ _dev_bind_popup() {
 # Everything binding depends on. A new shell on an unchanged machine finds the
 # same signature on the server and binds nothing; a brew upgrade, a newly
 # installed lazygit or a changed setting changes it and rebinds.
+# Bump when what a key runs or how it looks changes, so a running tmux server
+# picks the change up on the next shell, not only after `dev reload`.
+_DEV_BINDINGS_REV=2
+
 _dev_binding_signature() {
-    local key parts="${DEV_VERSION}|${DEV_SCRIPT}|${SHELL}"
+    local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
     _dev_has_command kb && parts+="|kb"
     _dev_has_command lazygit && parts+="|lazygit"
     for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview; do
@@ -1824,7 +1828,7 @@ _dev_setup_popup_keybindings() {
         _dev_bind_popup "${wanted[key_agent]}" "AI assistant" ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
     fi
     [[ -n "${wanted[key_new]}" ]] && _dev_bind_key "${wanted[key_new]}" "New branch tab" \
-        display-popup -E -w 60 -h 8 -b single -T " New branch tab " \
+        display-popup -E -w 90% -h 90% -b single -T " New branch tab " \
         -d "#{pane_current_path}" zsh "$DEV_SCRIPT" grid add --prompt
     if [[ -n "${wanted[key_kb]}" ]] && _dev_has_command kb; then
         _dev_bind_popup "${wanted[key_kb]}" "Kanban board" kb kb
