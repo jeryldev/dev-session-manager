@@ -171,7 +171,7 @@ assert_default_windows() {
     # re-escapes the binding, and slugging makes the space case unreachable
     # end to end, so neither would show this bug.
     local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script term sh" </dev/null)"
-    [[ "$script" == *'-E "tmux attach-session -t \"$SESSION\""'* ]]
+    [[ "$script" == *'-E "tmux attach-session -t \"=$SESSION\""'* ]]
 }
 
 @test "the popup's attach command keeps a target with a space as one argument" {
@@ -852,23 +852,23 @@ sys.exit(proc.wait())
     [ "$output" = "dev-" ]
 }
 
-@test "DEV_AI_CMD defaults to claude" {
-    run zsh -c "unset DEV_AI_CMD; source '$DEV_ZSH' 2>/dev/null; echo \$DEV_AI_CMD"
+@test "ai_cmd defaults to claude" {
+    run zsh -c "unset DEV_AI_CMD; source '$DEV_ZSH' 2>/dev/null; _dev_cfg ai_cmd"
     [ "$output" = "claude" ]
 }
 
-@test "DEV_AI_CMD can be overridden" {
-    run zsh -c "DEV_AI_CMD=aider; source '$DEV_ZSH' 2>/dev/null; echo \$DEV_AI_CMD"
+@test "DEV_AI_CMD overrides ai_cmd" {
+    run zsh -c "DEV_AI_CMD=aider; source '$DEV_ZSH' 2>/dev/null; _dev_cfg ai_cmd"
     [ "$output" = "aider" ]
 }
 
-@test "DEV_DEFAULT_DIR defaults to ~/code" {
-    run zsh -c "unset DEV_HOME_DIR; source '$DEV_ZSH' 2>/dev/null; echo \$DEV_DEFAULT_DIR"
+@test "home_dir defaults to ~/code" {
+    run zsh -c "unset DEV_HOME_DIR; source '$DEV_ZSH' 2>/dev/null; _dev_cfg home_dir"
     [ "$output" = "$HOME/code" ]
 }
 
-@test "DEV_DEFAULT_DIR respects DEV_HOME_DIR" {
-    run zsh -c "DEV_HOME_DIR=/tmp/test; source '$DEV_ZSH' 2>/dev/null; echo \$DEV_DEFAULT_DIR"
+@test "DEV_HOME_DIR overrides home_dir" {
+    run zsh -c "DEV_HOME_DIR=/tmp/test; source '$DEV_ZSH' 2>/dev/null; _dev_cfg home_dir"
     [ "$output" = "/tmp/test" ]
 }
 

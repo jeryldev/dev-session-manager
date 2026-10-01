@@ -7,32 +7,12 @@ setup() {
     load test_helper
     DEV_ZSH="$PROJECT_ROOT/dev.zsh"
     isolate_tmux
-    # HOME is redirected, so git has no identity to commit with.
-    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-    CODE="$(cd "$HOME/code" && pwd -P)"
+    isolate_git
 }
 
 teardown() {
     teardown_tmux
 }
-
-# A repo with one commit. Further worktrees are added by each test.
-make_repo() {
-    local repo="$CODE/${1:-myrepo}"
-    git init -q -b main "$repo"
-    git -C "$repo" commit -q --allow-empty -m init
-    echo "$repo"
-}
-
-# `dev grid` ends in an attach, which fails without a terminal (as `dev <name>`
-# does). Build tests therefore assert on the session, not on this status.
-run_grid() {
-    local dir="$1"; shift
-    run zsh -c "cd '$dir' && source '$DEV_ZSH' 2>/dev/null; dev grid $*" </dev/null
-}
-
-windows() { tmux list-windows -t "=$1:" -F '#{window_index} #{window_name}'; }
 
 # ─── Building (US-14, D21) ───
 

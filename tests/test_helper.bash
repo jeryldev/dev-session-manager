@@ -107,3 +107,30 @@ create_dev_session() {
     zsh -c "source '$PROJECT_ROOT/dev.zsh' 2>/dev/null; dev $1" </dev/null &>/dev/null || true
     return 0
 }
+
+# Git with an identity and no developer config: HOME is redirected, and a
+# repo-level hook or alias from the real config must not reach the tests.
+isolate_git() {
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+    CODE="$(cd "$HOME/code" && pwd -P)"
+}
+
+# A repo with one commit, under $CODE. Further worktrees are added by each test.
+make_repo() {
+    local repo="$CODE/${1:-myrepo}"
+    git init -q -b main "$repo"
+    git -C "$repo" commit -q --allow-empty -m init
+    echo "$repo"
+}
+
+# `dev grid` ends in an attach, which fails without a terminal (as `dev <name>`
+# does). Build tests therefore assert on the session, not on this status.
+# Values travel as arguments, not spliced into the script: a test directory
+# with a quote in its name must not break the helper that tests quoting.
+run_grid() {
+    local dir="$1"; shift
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid "$@"' _ "$dir" "$PROJECT_ROOT/dev.zsh" "$@" </dev/null
+}
+
+windows() { tmux list-windows -t "=$1:" -F '#{window_index} #{window_name}'; }

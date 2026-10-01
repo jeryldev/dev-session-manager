@@ -15,8 +15,56 @@ DEV_SCRIPT="${${(%):-%x}:A}"
 
 # Configuration
 DEV_SESSION_PREFIX="dev-"
-DEV_DEFAULT_DIR="${DEV_HOME_DIR:-$HOME/code}"
-DEV_AI_CMD="${DEV_AI_CMD:-claude}"
+
+# Settings resolve env > config file > default, at the moment they are used:
+# the same file then configures a sourced and an executed (Homebrew) install,
+# where only exported variables would otherwise reach the latter.
+typeset -gA _DEV_CFG_ENV=(
+    ai_cmd DEV_AI_CMD
+    ai_args DEV_AI_ARGS
+    ssh_key DEV_SSH_KEY
+    home_dir DEV_HOME_DIR
+    windows DEV_WINDOWS
+    worktree_create_cmd DEV_WORKTREE_CREATE_CMD
+    agent_launch_cmd DEV_AGENT_LAUNCH_CMD
+)
+typeset -gA _DEV_CFG_DEFAULT=(
+    ai_cmd claude
+    home_dir "$HOME/code"
+    windows editor,server,test,shell
+)
+
+_dev_config_file() {
+    print -r -- "${XDG_CONFIG_HOME:-$HOME/.config}/dev-session-manager/config"
+}
+
+# A key's value from the config file: `key = value` lines, read as data.
+_dev_config_file_value() {
+    # `#` as "zero or more" below is extended glob; without it, it is literal.
+    setopt localoptions extendedglob
+    local file="$(_dev_config_file)" line key value
+    [[ -r "$file" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == *=* && "$line" != [[:space:]]#\#* ]] || continue
+        key="${${line%%=*}//[[:space:]]/}"
+        value="${line#*=}"
+        value="${value##[[:space:]]#}"
+        value="${value%%[[:space:]]#}"
+        [[ "$key" == "$1" ]] && { print -r -- "$value"; return 0; }
+    done < "$file"
+    return 1
+}
+
+_dev_cfg() {
+    local key="$1" env_var="${_DEV_CFG_ENV[$1]}" value
+    if [[ -n "$env_var" && -n "${(P)env_var}" ]]; then
+        print -r -- "${(P)env_var}"
+    elif value="$(_dev_config_file_value "$key")" && [[ -n "$value" ]]; then
+        print -r -- "$value"
+    else
+        print -r -- "${_DEV_CFG_DEFAULT[$key]}"
+    fi
+}
 
 # Colors are chosen per call, not when this file is sourced: sourced from
 # .zshrc the file is read once, on a terminal, and every later `dev ... | cat`
@@ -135,7 +183,7 @@ _dev_number_from_one() {
 # the default four. Checked before anything is built: a name tmux cannot
 # target would leave a half-made session, and prefix 1-9 reaches only nine.
 _dev_window_names() {
-    local -a names=(${(s:,:)${DEV_WINDOWS:-editor,server,test,shell}})
+    local -a names=(${(s:,:)$(_dev_cfg windows)})
     local name
     for name in "${names[@]}"; do
         if [[ -z "$name" || "$name" =~ [^a-zA-Z0-9_-] ]]; then
@@ -192,6 +240,24 @@ _dev_worktrees() {
     done
 }
 
+_dev_sha1() {
+    print -rn -- "$1" | git hash-object --stdin
+}
+
+# Stamped on every grid tab. The ids are derived from paths, never stored, so
+# a grid rebuilt after a reboot gets the same ones and each agent resumes its
+# own conversation. The session id is a SHA-1 shaped as a version-5 UUID,
+# which is what `claude --session-id` takes.
+_dev_stamp_workspace() {
+    local target="$1" wt_path="$2" repo="$3"
+    local path_hash="$(_dev_sha1 "$wt_path")" h="$(_dev_sha1 "dev-grid:${repo}:${wt_path}")"
+    local variant="$(( (16#${h[17]} & 3) | 8 ))"
+    local sid="${h[1,8]}-${h[9,12]}-5${h[14,16]}-$(( [##16] variant ))${h[18,20]}-${h[21,32]}"
+    tmux set-option -w -t "$target" @dev_workspace "$wt_path"
+    tmux set-option -w -t "$target" @dev_ws_id "$(_dev_slug "${wt_path:t}")-${path_hash[1,4]}"
+    tmux set-option -w -t "$target" @dev_agent_sid "${(L)sid}"
+}
+
 _dev_grid_build() {
     local repo session_name stamp
     if ! repo="$(_dev_repo_root)"; then
@@ -239,11 +305,11 @@ _dev_grid_build() {
     tmux new-session -d -s "$session_name" -n "${paths[1]:t}" -c "${paths[1]}"
     _dev_number_from_one "$session_name"
     tmux set-option -t "=${session_name}:" @dev_grid "$repo"
-    tmux set-option -w -t "=${session_name}:1" @dev_workspace "${paths[1]}"
+    _dev_stamp_workspace "=${session_name}:1" "${paths[1]}" "$repo"
     local i
     for (( i = 2; i <= ${#paths}; i++ )); do
         tmux new-window -t "=${session_name}:${i}" -n "${paths[i]:t}" -c "${paths[i]}"
-        tmux set-option -w -t "=${session_name}:${i}" @dev_workspace "${paths[i]}"
+        _dev_stamp_workspace "=${session_name}:${i}" "${paths[i]}" "$repo"
     done
     tmux select-window -t "=${session_name}:1"
     _dev_attach_session "$session_name" "Created $(_dev_plural ${#paths} tab), one per worktree"
@@ -353,7 +419,7 @@ _dev_grid_add() {
     fi
 
     tmux new-window -t "=${grid_session}:${free}" -n "${wt_path:t}" -c "$wt_path"
-    tmux set-option -w -t "=${grid_session}:${free}" @dev_workspace "$wt_path"
+    _dev_stamp_workspace "=${grid_session}:${free}" "$wt_path" "$repo"
     _dev_grid_show_tab "$grid_session" "$free"
     echo -e "${GREEN}✓ ${branch} is tab ${free}${NC}"
 }
@@ -380,12 +446,13 @@ _dev_grid_add_prompt() {
 # is an error, never a reason to fall back to git and build half a workspace.
 _dev_create_worktree() {
     local repo="$1" branch="$2" out wt_path rc
-    if [[ -n "$DEV_WORKTREE_CREATE_CMD" ]]; then
-        local cmd="${DEV_WORKTREE_CREATE_CMD//\{branch\}/${(qq)branch}}"
+    local create_cmd="$(_dev_cfg worktree_create_cmd)"
+    if [[ -n "$create_cmd" ]]; then
+        local cmd="${create_cmd//\{branch\}/${(qq)branch}}"
         out="$(cd "$repo" && sh -c "$cmd")"
         rc=$?
         if (( rc )); then
-            echo -e "${RED}Error: the create command exited ${rc}: ${DEV_WORKTREE_CREATE_CMD}${NC}" >&2
+            echo -e "${RED}Error: the create command exited ${rc}: ${create_cmd}${NC}" >&2
             return 1
         fi
         # An array, not ${${(f)out}[-1]}: one line of output makes that a
@@ -393,7 +460,7 @@ _dev_create_worktree() {
         local -a lines=(${(f)out})
         wt_path="${lines[-1]}"
         if [[ -z "$wt_path" || ! -d "$wt_path" ]]; then
-            echo -e "${RED}Error: the create command printed no existing directory: ${DEV_WORKTREE_CREATE_CMD}${NC}" >&2
+            echo -e "${RED}Error: the create command printed no existing directory: ${create_cmd}${NC}" >&2
             return 1
         fi
     else
@@ -489,7 +556,7 @@ dev() {
             for (( i = 1; i <= ${#windows}; i++ )); do
                 layout+="  ${i}. ${windows[i]}"
             done
-            echo -e "${YELLOW}'dev <name>' windows (all start at ${DEV_DEFAULT_DIR}; set DEV_WINDOWS to change):${NC}"
+            echo -e "${YELLOW}'dev <name>' windows (all start at $(_dev_cfg home_dir); set DEV_WINDOWS to change):${NC}"
             echo -e "${layout}"
             echo ""
             echo -e "${YELLOW}Popup keybindings (inside tmux):${NC}"
@@ -621,6 +688,11 @@ dev() {
                     return 1
                     ;;
             esac
+            ;;
+
+        __agent)
+            # What the agent popup runs; not a user command.
+            _dev_agent_exec "$2"
             ;;
 
         clean)
@@ -793,11 +865,12 @@ dev() {
             # Create new session
             echo -e "${GREEN}Creating session: ${display_name}${NC}"
 
-            tmux new-session -d -s "$session_name" -n "${windows[1]}" -c "$DEV_DEFAULT_DIR"
+            local home_dir="$(_dev_cfg home_dir)"
+            tmux new-session -d -s "$session_name" -n "${windows[1]}" -c "$home_dir"
             _dev_number_from_one "$session_name"
             local i
             for (( i = 2; i <= ${#windows}; i++ )); do
-                tmux new-window -t "=${session_name}:${i}" -n "${windows[i]}" -c "$DEV_DEFAULT_DIR"
+                tmux new-window -t "=${session_name}:${i}" -n "${windows[i]}" -c "$home_dir"
             done
             tmux select-window -t "=${session_name}:1"
 
@@ -807,28 +880,36 @@ dev() {
 }
 
 _dev_validate_ai_cmd() {
-    if [[ "$DEV_AI_CMD" == *" "* ]]; then
-        echo -e "${RED}Error: DEV_AI_CMD cannot contain spaces ('${DEV_AI_CMD}')${NC}"
+    local ai_cmd="$(_dev_cfg ai_cmd)"
+    if [[ "$ai_cmd" == *" "* ]]; then
+        echo -e "${RED}Error: DEV_AI_CMD cannot contain spaces ('${ai_cmd}'); put flags in DEV_AI_ARGS${NC}"
         return 1
     fi
     return 0
 }
 
 # The shell script a popup key runs. tmux expands its #{...} formats at key
-# press time, then hands it to sh. Both names are slugged there, not here: they
-# are only known at key press, and tmux keeps ':' and '.' in a session name but
-# cannot target one that has them. The attach target is quoted because the -E
-# payload is word-split by sh, where an unquoted name with a space breaks the
-# attach.
+# press time, then hands it to sh.
 #
-# The popup is stamped with its parent's session id, in the same tmux command
-# that creates it. An id, not a name: `prefix $` renames sessions, and a name
-# stamp would then make every popup of a live session look orphaned. The id is
-# single-quoted because sh would read `$1` as a positional parameter.
+# The popup's key is the window's workspace id when it has one (grid tabs, and
+# popups, which inherit it), so renaming the tab or cd-ing elsewhere reaches
+# the same popup and a popup opened inside a popup is not nested. Otherwise it
+# is session-index-window, both names slugged there, not here: they are only
+# known at key press, and tmux keeps ':' and '.' in a session name but cannot
+# target one that has them. Every value spliced in is slug-safe or an id.
+#
+# The new popup is stamped in the tmux command that creates it: with its
+# parent's session id (`prefix $` renames sessions; an id survives that), its
+# key, and the pane its workspace started from, so dev can find the workspace
+# again without copying paths through sh. The id is single-quoted because sh
+# reads `$1` as a positional parameter. '=' makes every lookup exact: tmux
+# otherwise prefix-matches, and term-x-0-edit would find term-x-0-edit2.
 _dev_popup_script() {
     local prefix="$1" cmd="$2" suffix="${3:+-$3}"
     local slug='[^a-zA-Z0-9_-]/-/'
-    print -r -- 'SESSION="'"${prefix}"'-#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}'"${suffix}"'"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'" \; set-option -t "$SESSION" @dev_parent '"'"'#{session_id}'"'"'; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t \"$SESSION\""'
+    local key='#{?#{@dev_ws_id},#{@dev_ws_id},#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}}'
+    local origin='#{?#{@dev_origin},#{@dev_origin},#{pane_id}}'
+    print -r -- 'SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "'"${cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'"; tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""'
 }
 
 # The session-closed hook that reaps a closed session's popups. Pure sh and
@@ -872,6 +953,78 @@ _dev_orphan_popups() {
     done
 }
 
+# A setting as the agent popup sees it. The popup runs under the tmux server's
+# environment, not the user's shell, so the values resolved when dev last bound
+# its keys are published as server options and read back here.
+_dev_agent_cfg() {
+    local value="$(tmux show-options -gqv "@dev_cfg_$1" 2>/dev/null)"
+    [[ -n "$value" ]] && print -r -- "$value" || _dev_cfg "$1"
+}
+
+_dev_publish_config() {
+    local key value
+    for key in ai_cmd ai_args ssh_key agent_launch_cmd; do
+        value="$(_dev_cfg "$key")"
+        if [[ -n "$value" ]]; then
+            tmux set-option -g "@dev_cfg_${key}" "$value"
+        else
+            tmux set-option -gu "@dev_cfg_${key}" 2>/dev/null
+        fi
+    done
+}
+
+# The shell command that starts a pane's agent, built here in zsh so every
+# value is quoted once, properly. A popup's pane leads back to the pane its
+# workspace started from.
+_dev_agent_command() {
+    local pane="$1" origin
+    origin="$(tmux display-message -p -t "$pane" '#{@dev_origin}' 2>/dev/null)"
+    [[ -n "$origin" ]] && tmux display-message -p -t "$origin" '' &>/dev/null && pane="$origin"
+
+    local workspace ws_id sid ai_cmd
+    workspace="$(tmux display-message -p -t "$pane" '#{@dev_workspace}')"
+    ws_id="$(tmux display-message -p -t "$pane" '#{@dev_ws_id}')"
+    sid="$(tmux display-message -p -t "$pane" '#{@dev_agent_sid}')"
+    ai_cmd="$(tmux display-message -p -t "$pane" '#{@dev_ai_cmd}')"
+    [[ -n "$ai_cmd" ]] || ai_cmd="$(_dev_agent_cfg ai_cmd)"
+    local ai_args="$(_dev_agent_cfg ai_args)"
+    [[ -z "$ai_args" && "$ai_cmd" == claude ]] && ai_args="--enable-auto-mode"
+    local launch="$(_dev_agent_cfg agent_launch_cmd)" ssh_key="$(_dev_agent_cfg ssh_key)"
+
+    local out=""
+    [[ -n "$workspace" ]] && out+="cd ${(qq)workspace} || exit 1; "
+    if [[ -n "$ssh_key" && -f "$ssh_key" ]]; then
+        out+="ssh-add ${(qq)ssh_key} 2>/dev/null; "
+    elif [[ -n "$ssh_key" ]]; then
+        local warning="dev: ssh key not found, skipped: ${ssh_key}"
+        out+="echo ${(qq)warning} >&2; "
+    fi
+
+    if [[ -n "$launch" ]]; then
+        # The user's own command, so it runs as written; only the values are
+        # quoted. A failing launcher is not retried as plain claude.
+        launch="${launch//\{ws\}/${(qq)ws_id}}"
+        launch="${launch//\{path\}/${(qq)workspace}}"
+        launch="${launch//\{sid\}/${(qq)sid}}"
+        out+="$launch"
+    else
+        local base="${ai_cmd}${ai_args:+ $ai_args}"
+        if [[ "$ai_cmd" == claude && -n "$sid" ]]; then
+            # --resume first: --session-id refuses an id that already exists.
+            out+="$base --resume ${(qq)sid} || $base --session-id ${(qq)sid}"
+        else
+            out+="$base"
+        fi
+    fi
+    print -r -- "$out"
+}
+
+_dev_agent_exec() {
+    local cmd
+    cmd="$(_dev_agent_command "$1")" || return 1
+    exec sh -c "$cmd"
+}
+
 _dev_plural() {
     (( $1 == 1 )) && print -r -- "$1 $2" || print -r -- "$1 ${2}s"
 }
@@ -899,9 +1052,10 @@ _dev_setup_popup_keybindings() {
     # append another reaper each time. Index 0, where a user's own hook lands,
     # is left alone.
     tmux set-hook -g 'session-closed[99]' "$(_dev_reaper_hook)"
+    _dev_publish_config
     _dev_bind_popup j term "${SHELL:-zsh}"
     if _dev_validate_ai_cmd; then
-        _dev_bind_popup a ai "[ -f ~/.ssh/id_ed25519 ] && ssh-add ~/.ssh/id_ed25519 2>/dev/null; ${DEV_AI_CMD} --enable-auto-mode" "${DEV_AI_CMD}"
+        _dev_bind_popup a ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
     fi
     _dev_bind_new_branch_key
     _dev_has_command kb && _dev_bind_popup k kb kb
