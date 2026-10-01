@@ -189,14 +189,7 @@ Changing directories with `cd` does not affect which session you get. The sessio
 
 ### AI tool customization
 
-The AI popup uses `claude` by default. Set `DEV_AI_CMD` in your `.zshrc` before the source line to use a different tool:
-
-```bash
-export DEV_AI_CMD="aider"
-
-# Dev session manager
-[[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh
-```
+The AI popup uses `claude` by default. Set `DEV_AI_CMD` to use a different tool — see [Configuration](#configuration) for where, which depends on how you installed.
 
 Supported tools:
 
@@ -209,20 +202,37 @@ Supported tools:
 
 ## Configuration
 
-Set these variables in your `.zshrc` before the source line:
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DEV_HOME_DIR` | `~/code` | Base directory for new session windows |
 | `DEV_AI_CMD` | `claude` | AI coding tool for the popup (`prefix + a`) |
 
+Where you set them depends on how you installed.
+
+### Homebrew
+
+`dev` is a command, so it only sees variables that are **exported** in your shell. Add them anywhere in `.zshrc`:
+
 ```bash
 export DEV_HOME_DIR="$HOME/projects"
-export DEV_AI_CMD="claude"
+export DEV_AI_CMD="aider"
+```
+
+Open a new shell, then run `dev reload` inside tmux (or create or attach to a session) so the popup keys pick up the change.
+
+### Quick install or manual install
+
+`dev.zsh` is sourced from `.zshrc` and binds the popup keys as it loads, so set the variables **before the source line**:
+
+```bash
+export DEV_HOME_DIR="$HOME/projects"
+export DEV_AI_CMD="aider"
 
 # Dev session manager
 [[ -f ~/.config/zsh/dev.zsh ]] && source ~/.config/zsh/dev.zsh
 ```
+
+A value set after the source line is not used by the popup keys until the next `dev reload`, `dev <name>` or `dev attach`.
 
 ## Uninstall
 

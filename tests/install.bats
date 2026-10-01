@@ -189,3 +189,20 @@ run_install_decline_all() {
     [[ "$output" != *"Installation complete"* ]]
     [ "$(cat "$HOME/.zshrc")" = "$before" ]
 }
+
+# ─── README configuration matches the install path (US-6) ───
+
+readme_section() {
+    awk -v h="$1" '$0 == h {on=1; next} on && /^#{2,3} / {exit} on' "$PROJECT_ROOT/README.md"
+}
+
+@test "README tells Homebrew users to export settings, with no source line" {
+    local section; section="$(readme_section '### Homebrew' | sed -n '1,40p')"
+    [[ "$section" == *'export DEV_AI_CMD='* ]]
+    [[ "$section" != *'source line'* ]]
+}
+
+@test "README tells sourced installs to set settings before the source line" {
+    local section; section="$(readme_section '### Quick install or manual install')"
+    [[ "$section" == *'before the source line'* ]]
+}
