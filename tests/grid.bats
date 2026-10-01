@@ -797,3 +797,196 @@ assert row["label"] == "api|v2" and row["branch"] == "a" and row["path"].endswit
     grid_cmd "$repo" status
     [[ "$output" =~ 2\ +myrepo-a\ +-\ +missing ]]
 }
+
+# ─── dev grid remove (US-38) ───
+
+# --yes: off a terminal, remove refuses to delete anything without it.
+remove_cmd() {
+    local dir="$1"; shift
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid remove "$@"' _ "$dir" "$DEV_ZSH" "$@" --yes </dev/null
+}
+
+@test "remove deletes the worktree, closes its tab, and keeps the branch" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    git -C "$repo" worktree add -q -b keep "$CODE/myrepo-keep"
+    run_grid "$repo"
+    remove_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    [ ! -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n3 myrepo-keep' ]
+    git -C "$repo" show-ref --verify --quiet refs/heads/feat
+}
+
+@test "remove refuses a workspace with uncommitted changes" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    touch "$CODE/myrepo-feat/unsaved.txt"
+    remove_cmd "$repo" myrepo-feat
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"uncommitted"*"--force"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "remove --force removes it anyway" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    touch "$CODE/myrepo-feat/unsaved.txt"
+    remove_cmd "$repo" 2 --force
+    [ "$status" -eq 0 ]
+    [ ! -d "$CODE/myrepo-feat" ]
+}
+
+@test "the main checkout is never removed" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    remove_cmd "$repo" 1 --force
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"main checkout"* ]]
+    [ -d "$repo/.git" ]
+}
+
+@test "remove --dry-run changes nothing" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    remove_cmd "$repo" 2 --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"would remove"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "remove closes the tab's popups too" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local id; id="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    tmux new-session -d -s "term-$id" "sleep 300"
+    tmux set-option -t "=term-$id:" @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    tmux set-option -w -t "=term-$id:" @dev_ws_id "$id"
+    remove_cmd "$repo" 2
+    ! tmux has-session -t "=term-$id" 2>/dev/null
+}
+
+@test "a configured remove command is used, with the values quoted" {
+    # e.g. bin/agent-grid worktree remove {path}, which also drops its database.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    export DEV_WORKTREE_REMOVE_CMD="printf '%s|%s' {path} {branch} > '$BATS_TEST_TMPDIR/got'; git worktree remove {path}"
+    remove_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/got")" = "$CODE/myrepo-feat|feat" ]
+    [ ! -d "$CODE/myrepo-feat" ]
+}
+
+@test "a failing remove command keeps the tab and does not fall back to git" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    export DEV_WORKTREE_REMOVE_CMD="echo 'that is a slot' >&2; exit 5"
+    remove_cmd "$repo" 2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"exited 5"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "a workspace whose folder is already gone just loses its tab" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    rm -rf "$CODE/myrepo-feat"
+    remove_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+@test "remove of a name not in the grid lists the tabs" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    remove_cmd "$repo" nope
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"1 myrepo"* ]]
+}
+
+@test "off a terminal, remove refuses without --yes" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid remove 2' _ "$repo" "$DEV_ZSH" </dev/null
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--yes"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+}
+
+# Answers remove's question on a real terminal, through the pty helper.
+answer_remove() {
+    local answer="$1" log="$BATS_TEST_TMPDIR/rm.log" keys="$BATS_TEST_TMPDIR/rm.keys" i
+    mkfifo "$keys"
+    python3 "$PROJECT_ROOT/tests/pty_client.py" "$keys" "$log" 120 40 -- \
+        zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid remove 2' _ "$REPO" "$DEV_ZSH" >/dev/null 2>&1 3>&- &
+    local client=$!
+    for i in $(seq 1 30); do grep -aq 'Type y to remove' "$log" 2>/dev/null && break; sleep 0.2; done
+    grep -aq 'myrepo-feat' "$log"
+    grep -aq 'branch feat is kept' "$log"
+    printf '%s\r' "$answer" > "$keys"
+    for i in $(seq 1 30); do kill -0 "$client" 2>/dev/null || break; sleep 0.2; done
+    kill "$client" 2>/dev/null || true
+}
+
+@test "on a terminal, remove shows what it will do and needs a y" {
+    REPO="$(make_repo)"
+    git -C "$REPO" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$REPO"
+    answer_remove n
+    [ -d "$CODE/myrepo-feat" ]
+    rm -f "$BATS_TEST_TMPDIR/rm.keys"
+    answer_remove y
+    [ ! -d "$CODE/myrepo-feat" ]
+}
+
+@test "prefix X asks to remove the tab it was pressed in" {
+    start_isolated_server
+    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "X"')"
+    [[ "$binding" == *"display-popup"* && "$binding" == *"grid remove --pane"* ]]
+}
+
+@test "remove --pane acts on the tab that pane is in" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run zsh -c 'cd / && source "$1" 2>/dev/null; dev grid remove --pane "$2" --yes' _ "$DEV_ZSH" "$pane" </dev/null
+    [ "$status" -eq 0 ]
+    [ ! -d "$CODE/myrepo-feat" ]
+}
+
+@test "a configured remove command gets {force} only with --force" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    git -C "$repo" worktree add -q -b other "$CODE/myrepo-other"
+    run_grid "$repo"
+    export DEV_WORKTREE_REMOVE_CMD="printf '[%s]' {force} >> '$BATS_TEST_TMPDIR/got'; git worktree remove {force} {path}"
+    remove_cmd "$repo" 2
+    remove_cmd "$repo" myrepo-other --force
+    [ "$(cat "$BATS_TEST_TMPDIR/got")" = "[][--force]" ]
+}
+
+@test "uncommitted changes are refused even when the remove command would not check" {
+    # git worktree remove refuses a dirty worktree itself; a configured command
+    # may not, so dev's own check is what protects the work.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    touch "$CODE/myrepo-feat/unsaved.txt"
+    export DEV_WORKTREE_REMOVE_CMD="rm -rf {path} && git worktree prune"
+    remove_cmd "$repo" 2
+    [ "$status" -ne 0 ]
+    [ -f "$CODE/myrepo-feat/unsaved.txt" ]
+}

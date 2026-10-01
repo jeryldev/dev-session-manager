@@ -34,6 +34,7 @@ typeset -gA _DEV_CFG_ENV=(
     worktree_create_cmd DEV_WORKTREE_CREATE_CMD
     agent_launch_cmd DEV_AGENT_LAUNCH_CMD
     watch_cmd DEV_WATCH_CMD
+    worktree_remove_cmd DEV_WORKTREE_REMOVE_CMD
     grid_cmd DEV_GRID_CMD
     key_agent DEV_KEY_AGENT
     key_term DEV_KEY_TERM
@@ -42,6 +43,7 @@ typeset -gA _DEV_CFG_ENV=(
     key_new DEV_KEY_NEW
     key_coordinator DEV_KEY_COORDINATOR
     key_overview DEV_KEY_OVERVIEW
+    key_remove DEV_KEY_REMOVE
 )
 typeset -gA _DEV_CFG_DEFAULT=(
     ai_cmd claude
@@ -54,6 +56,7 @@ typeset -gA _DEV_CFG_DEFAULT=(
     key_new N
     key_coordinator S
     key_overview O
+    key_remove X
 )
 
 _dev_config_file() {
@@ -1022,6 +1025,149 @@ _dev_grid_kill() {
     echo -e "${GREEN}✓ Killed ${grid_session} (and $(_dev_plural ${#popups} popup))${NC}"
 }
 
+# Removes a workspace: its worktree (through worktree_remove_cmd if set, which
+# can also drop a database), then its tab and popups. Never the main checkout,
+# never a workspace with uncommitted changes without --force, never anything
+# without a "y" on a terminal or --yes elsewhere. The branch is kept: deleting
+# commits stays a deliberate `git branch -d`.
+_dev_grid_remove() {
+    local ws="" force=0 dry_run=0 yes=0 pane=""
+    while (( $# )); do
+        case "$1" in
+            --force) force=1; shift ;;
+            --dry-run) dry_run=1; shift ;;
+            --yes) yes=1; shift ;;
+            --pane) _dev_need_value "$1" $# || return 1; pane="$2"; shift 2 ;;
+            -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            *) ws="$1"; shift ;;
+        esac
+    done
+    local repo grid_session index
+    if [[ -n "$pane" ]]; then
+        # prefix X: the tab the key was pressed in.
+        repo="$(_dev_grid_of_pane "$pane")"
+        grid_session="$(_dev_grid_session "$repo")" || return 1
+        if [[ -z "$repo" || -z "$grid_session" || "$(tmux display-message -p -t "$pane" '#{session_name}')" != "$grid_session" ]]; then
+            echo -e "${RED}Error: not a grid tab — press it in the tab you want to remove${NC}"
+            return 1
+        fi
+        index="$(tmux display-message -p -t "$pane" '#{window_index}')"
+    else
+        _dev_agent_grid || return 1
+        if [[ -z "$ws" ]]; then
+            if [[ -n "$TMUX_PANE" && "$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}')" == "$grid_session" ]]; then
+                index="$(tmux display-message -p -t "$TMUX_PANE" '#{window_index}')"
+            else
+                echo -e "${RED}Usage: dev grid remove <tab|label|path> [--force] [--dry-run] [--yes]${NC}"
+                return 1
+            fi
+        else
+            index="$(_dev_agent_resolve "$ws")" || return 1
+        fi
+    fi
+
+    local window_id="$(tmux display-message -p -t "=${grid_session}:${index}" '#{window_id}')"
+    local workspace="$(_dev_text_get -w -t "$window_id" @dev_workspace)"
+    local ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
+    local label="$(tmux display-message -p -t "$window_id" '#{window_name}')"
+    if [[ -z "$workspace" ]]; then
+        echo -e "${RED}Error: tab ${index} is not a workspace${NC}"
+        return 1
+    fi
+    if [[ "$workspace" == "$repo" ]]; then
+        echo -e "${RED}Error: tab ${index} is the main checkout, which dev never removes${NC}"
+        return 1
+    fi
+
+    local branch changes gone=0
+    if [[ ! -d "$workspace" ]]; then
+        gone=1
+    elif ! _dev_workspace_git "$workspace"; then
+        changes="unknown"
+    fi
+    local dirty=0
+    [[ "$gone" == 0 && ( "$changes" != 0 ) ]] && dirty=1
+    local remove_cmd="$(_dev_cfg worktree_remove_cmd)"
+
+    print -r -- "Remove tab ${index} (${label})"
+    if (( gone )); then
+        print -r -- "  ${workspace} no longer exists; only the tab closes"
+    else
+        print -r -- "  worktree:  ${workspace}"
+        print -r -- "  removed by: ${remove_cmd:-git worktree remove}"
+        [[ "$branch" == "("* || -z "$branch" ]] || print -r -- "  branch ${branch} is kept"
+        if (( dirty )); then
+            print -r -- "  ${changes} uncommitted change(s) would be lost"
+        fi
+    fi
+    print -r -- "  its tab, agent and popups close"
+    if (( dirty && ! force )); then
+        echo -e "${RED}Refusing: tab ${index} has uncommitted changes. Commit or stash them, or pass --force${NC}"
+        return 1
+    fi
+    if (( dry_run )); then
+        print -r -- "(dry run: would remove tab ${index}; nothing changed)"
+        return 0
+    fi
+    if (( ! yes )); then
+        if [[ ! -t 0 ]]; then
+            echo -e "${RED}Not removing without confirmation: pass --yes${NC}"
+            return 1
+        fi
+        local answer
+        print -n "Type y to remove, anything else to keep it: "
+        read -r answer
+        if [[ "$answer" != (y|Y|yes) ]]; then
+            print -r -- "Kept."
+            return 0
+        fi
+    fi
+
+    if (( gone )); then
+        git -C "$repo" worktree prune 2>/dev/null
+    elif [[ -n "$remove_cmd" ]]; then
+        local cmd="${remove_cmd//\{path\}/${(qq)workspace}}"
+        cmd="${cmd//\{branch\}/${(qq)branch}}"
+        cmd="${cmd//\{force\}/${${force:#0}:+--force}}"
+        (cd "$repo" && sh -c "$cmd")
+        local rc=$?
+        if (( rc )); then
+            echo -e "${RED}Error: the remove command exited ${rc}: ${remove_cmd}${NC}"
+            echo -e "${YELLOW}Tab ${index} is kept${NC}"
+            return 1
+        fi
+    else
+        local -a git_force=()
+        (( force )) && git_force=(--force)
+        if ! git -C "$repo" worktree remove "${git_force[@]}" "$workspace"; then
+            echo -e "${YELLOW}Tab ${index} is kept${NC}"
+            return 1
+        fi
+    fi
+
+    # The worktree is gone: its popups and tab go with it.
+    local sid parent popup_ws
+    if [[ -n "$ws_id" ]]; then
+        tmux list-windows -a -F '#{session_id}|#{@dev_parent}|#{@dev_ws_id}' |
+            while IFS='|' read -r sid parent popup_ws; do
+                [[ -n "$parent" && "$popup_ws" == "$ws_id" ]] && tmux kill-session -t "$sid" 2>/dev/null
+            done
+    fi
+    tmux kill-window -t "$window_id"
+    echo -e "${GREEN}✓ Removed tab ${index} (${label})${NC}"
+}
+
+# What prefix X runs in its popup: on failure it stays open long enough to read.
+_dev_grid_remove_prompt() {
+    _dev_grid_remove --pane "$1"
+    local rc=$?
+    if (( rc )) && [[ -t 0 ]]; then
+        print -n "Press Enter to close "
+        read -r
+    fi
+    return $rc
+}
+
 _dev_grid_show_tab() {
     local grid_session="$1" index="$2"
     tmux select-window -t "=${grid_session}:${index}"
@@ -1089,6 +1235,7 @@ dev() {
             echo -e "                     (--filter <text>  --limit <1-9>  --session <name>)"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
+            echo -e "  ${BLUE}dev grid remove <t>${NC} Delete tab t's worktree, close the tab (asks first)"
             echo -e "  ${BLUE}dev grid sync${NC}      Add tabs for new worktrees (--dry-run)"
             echo -e "  ${BLUE}dev grid prune${NC}     Remove tabs of removed worktrees (--dry-run)"
             echo -e "  ${BLUE}dev grid kill${NC}      Close the grid and its popups (--dry-run)"
@@ -1118,7 +1265,8 @@ dev() {
             local conflicts="$(_dev_text_get -g @dev_key_conflicts)" setting k label held
             for setting label in key_agent "AI assistant ($(_dev_cfg ai_cmd))" key_kb "Kanban board (kb)" \
                     key_git "Git UI (lazygit)" key_term "Terminal (shell)" key_new "New branch as a grid tab" \
-                    key_coordinator "Grid coordinator agent" key_overview "Overview of the grid's agents"; do
+                    key_coordinator "Grid coordinator agent" key_overview "Overview of the grid's agents" \
+                    key_remove "Remove this tab's worktree (asks first)"; do
                 k="$(_dev_cfg "$setting")"
                 held=""
                 [[ ";${conflicts};" == *";${k}="* ]] && held="${${conflicts#*${k}=}%%;*}"
@@ -1247,10 +1395,18 @@ dev() {
                 sync) _dev_grid_sync "$3" ;;
                 prune) _dev_grid_prune "$3" ;;
                 kill) _dev_grid_kill "$3" ;;
+                remove)
+                    shift 2
+                    if [[ "$1" == --pane && "$#" -eq 2 ]]; then
+                        _dev_grid_remove_prompt "$2"
+                    else
+                        _dev_grid_remove "$@"
+                    fi
+                    ;;
                 add) _dev_grid_add "$3" ;;
                 *)
                     echo -e "${RED}Unknown grid command: $2${NC}"
-                    echo -e "${YELLOW}Usage: dev grid [status | add <branch> | sync | prune | kill] [--dry-run]${NC}"
+                    echo -e "${YELLOW}Usage: dev grid [status | add <branch> | remove [<tab>] | sync | prune | kill] [--dry-run]${NC}"
                     return 1
                     ;;
             esac
@@ -1723,6 +1879,7 @@ _dev_plural() {
 # to anything else is the user's, and dev leaves it alone.
 _dev_is_dev_binding() {
     [[ "$1" == *"display-popup -w 90% -h 90% -b single"* || "$1" == *"grid add --prompt"* ||
+       "$1" == *"grid remove --pane"* ||
        "$1" == *" __coordinator "* || "$1" == *" __overview "* ]]
 }
 
@@ -1767,13 +1924,13 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=2
+_DEV_BINDINGS_REV=3
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
     _dev_has_command kb && parts+="|kb"
     _dev_has_command lazygit && parts+="|lazygit"
-    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview; do
+    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview key_remove; do
         parts+="|$(_dev_cfg "$key")"
     done
     print -r -- "$parts"
@@ -1802,6 +1959,7 @@ _dev_setup_popup_keybindings() {
         key_git "$(_dev_cfg key_git)"
         key_coordinator "$(_dev_cfg key_coordinator)"
         key_overview "$(_dev_cfg key_overview)"
+        key_remove "$(_dev_cfg key_remove)"
     )
     local -a _dev_key_conflicts
     local name seen=" " bind_status=0
@@ -1814,7 +1972,7 @@ _dev_setup_popup_keybindings() {
         [[ " ${(v)wanted} " == *" ${bound} "* ]] || tmux unbind-key -T prefix "$bound"
     done
 
-    for name in key_term key_agent key_new key_kb key_git key_coordinator key_overview; do
+    for name in key_term key_agent key_new key_kb key_git key_coordinator key_overview key_remove; do
         if [[ "$seen" == *" ${wanted[$name]} "* ]]; then
             echo -e "${RED}Error: prefix ${wanted[$name]} is configured for two actions; ${name} is not bound${NC}" >&2
             wanted[$name]=""
@@ -1835,6 +1993,9 @@ _dev_setup_popup_keybindings() {
     fi
     [[ -n "${wanted[key_coordinator]}" ]] && _dev_bind_key "${wanted[key_coordinator]}" "Coordinator" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __coordinator '#{pane_id}' '#{client_name}'"
+    [[ -n "${wanted[key_remove]}" ]] && _dev_bind_key "${wanted[key_remove]}" "Remove this tab" \
+        display-popup -E -w 90% -h 90% -b single -T " Remove this tab " \
+        zsh "$DEV_SCRIPT" grid remove --pane "#{pane_id}"
     [[ -n "${wanted[key_overview]}" ]] && _dev_bind_key "${wanted[key_overview]}" "Overview" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __overview '#{pane_id}' '#{client_name}'"
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then

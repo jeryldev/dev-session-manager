@@ -97,6 +97,7 @@ When you add or remove worktrees outside dev, re-entering the grid tells you; no
 you ask:
 
 ```bash
+dev grid remove 3       # delete tab 3's worktree and close the tab (asks first; branch kept)
 dev grid sync           # a tab for each new worktree; existing tab numbers never change
 dev grid prune          # close the tabs (and popups) of worktrees that were removed
 dev grid kill           # close the whole grid; each takes --dry-run
@@ -139,6 +140,12 @@ dev grid --session mygrid          # build under another session name
 root, and `#` lines are comments. It is only ever read, never run. To compute the list instead, set
 `grid_cmd` (`DEV_GRID_CMD`) to a command that prints those lines; if it fails, `dev grid` stops rather
 than falling back to git.
+
+`dev grid remove` (or `prefix + X` in the tab itself) shows what it will delete and waits for a `y`.
+It never removes the main checkout, refuses a worktree with uncommitted changes unless you pass
+`--force`, and keeps the branch, so your commits stay. To remove through your own tool, one that also
+drops a database for example, set `worktree_remove_cmd`; `{path}`, `{branch}` and `{force}` are filled in.
+Scripts and agents must pass `--yes`.
 
 `prefix + N` does the same as `dev grid add`, asking for the branch in a small popup. A grid holds up to
 9 tabs, so `prefix + 1`-`9` always reaches them.
@@ -244,13 +251,14 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + g` | Git UI | lazygit |
 | `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
 | `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
+| `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
 | `prefix + S` | The grid's coordinator agent | one per grid |
 | `prefix + O` | Overview of the grid's agents | read-only, closed when dismissed |
 
 All popups open at 90% x 90% with a single border.
 
 Every key is configurable (`dev config set key_agent V`; also `key_term`, `key_git`, `key_kb`,
-`key_new`, `key_coordinator`, `key_overview`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
+`key_new`, `key_coordinator`, `key_overview`, `key_remove`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
 keys it skipped, and `dev help` marks them `not bound`.
 
 ### Setup
@@ -328,6 +336,7 @@ variable overrides the file for as long as it is set.
 | `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N` | Popup keys (after `prefix`) |
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
+| `worktree_remove_cmd` | `DEV_WORKTREE_REMOVE_CMD` | unset | Remove `dev grid remove` worktrees with your own command; `{path}`, `{branch}`, `{force}` are filled in |
 | `watch_cmd` | `DEV_WATCH_CMD` | unset | Run at each `dev agent watch` heartbeat; its output becomes events |
 | `grid_cmd` | `DEV_GRID_CMD` | unset | Print the grid's workspaces (`path<TAB>label` lines) instead of `.dev-grid` or git |
 
