@@ -118,6 +118,264 @@ _dev_session_not_found() {
     echo -e "${YELLOW}Tip: Run 'dev ls' to see active sessions${NC}"
 }
 
+# Windows are numbered from 1 on any config, as `dev help` and the grid's
+# `prefix N` promise: new-session puts the first window at the server's
+# base-index, 0 on a stock config, which left `prefix 1` reaching nothing.
+_dev_number_from_one() {
+    local session_name="$1"
+    tmux set-option -t "=${session_name}:" base-index 1
+    local first_index=$(tmux display-message -p -t "=${session_name}:" '#{window_index}')
+    [[ "$first_index" == "1" ]] || tmux move-window -s "=${session_name}:${first_index}" -t "=${session_name}:1"
+}
+
+_dev_slug() {
+    print -r -- "${1//[^a-zA-Z0-9_-]/-}"
+}
+
+# The main checkout of the repo containing the current directory, from any of
+# its worktrees: --show-toplevel would name the worktree instead.
+_dev_repo_root() {
+    local common
+    common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+    common="${common:A}"
+    if [[ "${common:t}" == ".git" ]]; then
+        print -r -- "${common:h}"
+    else
+        print -r -- "$common"
+    fi
+}
+
+# One usable worktree path per line, main checkout first. NUL-separated
+# porcelain, because a path may contain a newline; a record starts at its
+# `worktree` line. Bare entries have no checkout, and a prunable one's
+# directory is gone, so neither can be a tab.
+_dev_worktrees() {
+    local repo="$1" field wt_path="" skip=""
+    local -a fields=("${(@0)$(git -C "$repo" worktree list --porcelain -z)}")
+    for field in "${fields[@]}" "worktree "; do
+        if [[ "$field" == "worktree "* ]]; then
+            if [[ -n "$wt_path" && -z "$skip" ]]; then
+                if [[ -d "$wt_path" ]]; then
+                    print -r -- "$wt_path"
+                else
+                    print -r -- "Skipping ${wt_path}: directory not found" >&2
+                fi
+            elif [[ -n "$wt_path" && "$skip" == prunable* ]]; then
+                print -r -- "Skipping ${wt_path}: ${skip}" >&2
+            fi
+            wt_path="${field#worktree }" skip=""
+        elif [[ "$field" == bare || "$field" == prunable* ]]; then
+            skip="$field"
+        fi
+    done
+}
+
+_dev_grid_build() {
+    local repo session_name stamp
+    if ! repo="$(_dev_repo_root)"; then
+        echo -e "${RED}Error: not a git repository: ${PWD}${NC}"
+        return 1
+    fi
+    session_name="${DEV_SESSION_PREFIX}$(_dev_slug "${repo:t}")-grid"
+    local display_name=$(_dev_display_name "$session_name")
+
+    # The stamp, not the name, says a session is this repo's grid: `dev
+    # myrepo-grid` makes a role session with exactly this name, and adopting it
+    # would put `frontend` where the first workspace belongs.
+    if tmux has-session -t "=${session_name}" 2>/dev/null; then
+        stamp="$(tmux show-options -t "=${session_name}:" -v @dev_grid 2>/dev/null)"
+        if [[ "$stamp" == "$repo" ]]; then
+            _dev_attach_session "$session_name" "Attaching to grid: ${display_name}"
+            return
+        elif [[ -z "$stamp" ]]; then
+            echo -e "${RED}✗ '${session_name}' exists but is not a workspace grid${NC}"
+            echo ""
+            echo -e "  Attach to it:   ${BLUE}dev attach ${display_name}${NC}"
+            echo -e "  Or remove it:   ${BLUE}dev kill ${display_name}${NC}"
+            echo -e "  Then re-run:    ${BLUE}dev grid${NC}"
+        else
+            echo -e "${RED}✗ '${session_name}' is the grid of ${stamp}${NC}"
+            echo -e "  Remove it with ${BLUE}dev kill ${display_name}${NC}, or rename this repo's directory"
+        fi
+        return 1
+    fi
+
+    local -a paths=(${(f)"$(_dev_worktrees "$repo")"})
+    if (( ${#paths} == 0 )); then
+        echo -e "${RED}Error: no usable worktrees in ${repo}${NC}"
+        return 1
+    fi
+    # prefix 1-9 reaches nine tabs. A tenth would quietly need prefix w, and
+    # building a subset nobody chose is worse than refusing.
+    if (( ${#paths} > 9 )); then
+        echo -e "${RED}Error: ${#paths} worktrees, but a grid holds 9 tabs (prefix 1-9)${NC}"
+        echo -e "${YELLOW}Remove some with 'git worktree remove', or wait for workspace selection${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}Creating grid: ${display_name}${NC}"
+    tmux new-session -d -s "$session_name" -n "${paths[1]:t}" -c "${paths[1]}"
+    _dev_number_from_one "$session_name"
+    tmux set-option -t "=${session_name}:" @dev_grid "$repo"
+    tmux set-option -w -t "=${session_name}:1" @dev_workspace "${paths[1]}"
+    local i
+    for (( i = 2; i <= ${#paths}; i++ )); do
+        tmux new-window -t "=${session_name}:${i}" -n "${paths[i]:t}" -c "${paths[i]}"
+        tmux set-option -w -t "=${session_name}:${i}" @dev_workspace "${paths[i]}"
+    done
+    tmux select-window -t "=${session_name}:1"
+    _dev_attach_session "$session_name" "Created $(_dev_plural ${#paths} tab), one per worktree"
+}
+
+# The grid session stamped for a repo, found by its stamp, never its name.
+_dev_grid_session() {
+    local repo="$1" stamp name
+    tmux list-sessions -F '#{@dev_grid}|#{session_name}' 2>/dev/null |
+        while IFS='|' read -r stamp name; do
+            [[ "$stamp" == "$repo" ]] && { print -r -- "$name"; return; }
+        done
+}
+
+# Sets repo and grid_session in the caller, or explains why it cannot.
+_dev_grid_locate() {
+    if ! repo="$(_dev_repo_root)"; then
+        echo -e "${RED}Error: not a git repository: ${PWD}${NC}"
+        return 1
+    fi
+    grid_session="$(_dev_grid_session "$repo")"
+    if [[ -z "$grid_session" ]]; then
+        echo -e "${RED}No grid for ${repo}${NC}"
+        echo -e "${YELLOW}Run 'dev grid' to build one${NC}"
+        return 1
+    fi
+}
+
+_dev_grid_status() {
+    local repo grid_session
+    _dev_grid_locate || return 1
+    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{@dev_workspace}|#{window_name}')"})
+    local index workspace name branch changes row width=9
+    for row in "${rows[@]}"; do
+        name="${row#*|*|}"
+        (( ${#name} > width )) && width=${#name}
+    done
+    printf "  %-3s %-${width}s  %-28s %s\n" "#" "workspace" "branch" "state"
+    for row in "${rows[@]}"; do
+        IFS='|' read -r index workspace name <<< "$row"
+        if [[ -z "$workspace" ]]; then
+            printf "  %-3s %-${width}s  %-28s %s\n" "$index" "$name" "-" "not a workspace"
+            continue
+        fi
+        branch="$(git -C "$workspace" branch --show-current 2>/dev/null)"
+        [[ -n "$branch" ]] || branch="(detached $(git -C "$workspace" rev-parse --short HEAD 2>/dev/null))"
+        changes=$(git -C "$workspace" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        (( changes )) && changes="${changes} changed" || changes="clean"
+        printf "  %-3s %-${width}s  %-28s %s\n" "$index" "$name" "$branch" "$changes"
+    done
+}
+
+# The worktree that has the branch checked out, if any.
+_dev_worktree_for_branch() {
+    local repo="$1" branch="$2" field wt_path=""
+    for field in "${(@0)$(git -C "$repo" worktree list --porcelain -z)}"; do
+        case "$field" in
+            "worktree "*) wt_path="${field#worktree }" ;;
+            "branch refs/heads/${branch}") print -r -- "$wt_path"; return ;;
+        esac
+    done
+}
+
+_dev_grid_add() {
+    local branch="$1"
+    if [[ -z "$branch" ]]; then
+        echo -e "${RED}Usage: dev grid add <branch>${NC}"
+        return 1
+    fi
+    if ! git check-ref-format --branch "$branch" &>/dev/null; then
+        echo -e "${RED}Error: '${branch}' is not a valid branch name${NC}"
+        return 1
+    fi
+    local repo grid_session
+    _dev_grid_locate || return 1
+
+    local wt_path="$(_dev_worktree_for_branch "$repo" "$branch")"
+    local index workspace
+    if [[ -n "$wt_path" ]]; then
+        while IFS='|' read -r index workspace; do
+            if [[ "$workspace" == "$wt_path" ]]; then
+                _dev_grid_show_tab "$grid_session" "$index"
+                echo -e "${BLUE}${branch} is already tab ${index}${NC}"
+                return 0
+            fi
+        done < <(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{@dev_workspace}')
+    fi
+
+    # Fill the first free number rather than appending past 9: existing tabs
+    # never move, and the new one stays reachable with prefix N.
+    local -a used=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}')"})
+    local free=""
+    for index in {1..9}; do
+        (( ${used[(Ie)$index]} )) || { free="$index"; break; }
+    done
+    if [[ -z "$free" ]]; then
+        echo -e "${RED}Error: the grid already has 9 tabs (prefix 1-9)${NC}"
+        return 1
+    fi
+
+    if [[ -z "$wt_path" ]]; then
+        wt_path="$(_dev_create_worktree "$repo" "$branch")" || return 1
+    fi
+
+    tmux new-window -t "=${grid_session}:${free}" -n "${wt_path:t}" -c "$wt_path"
+    tmux set-option -w -t "=${grid_session}:${free}" @dev_workspace "$wt_path"
+    _dev_grid_show_tab "$grid_session" "$free"
+    echo -e "${GREEN}✓ ${branch} is tab ${free}${NC}"
+}
+
+# A configured command (bin/agent-grid, say, which also provisions a database
+# and ports) or plain `git worktree add`. The branch is single-quoted into the
+# command: git accepts ; $( ) and backticks in branch names. A failing command
+# is an error, never a reason to fall back to git and build half a workspace.
+_dev_create_worktree() {
+    local repo="$1" branch="$2" out wt_path rc
+    if [[ -n "$DEV_WORKTREE_CREATE_CMD" ]]; then
+        local cmd="${DEV_WORKTREE_CREATE_CMD//\{branch\}/${(qq)branch}}"
+        out="$(cd "$repo" && sh -c "$cmd")"
+        rc=$?
+        if (( rc )); then
+            echo -e "${RED}Error: the create command exited ${rc}: ${DEV_WORKTREE_CREATE_CMD}${NC}" >&2
+            return 1
+        fi
+        # An array, not ${${(f)out}[-1]}: one line of output makes that a
+        # scalar, and [-1] then takes its last character.
+        local -a lines=(${(f)out})
+        wt_path="${lines[-1]}"
+        if [[ -z "$wt_path" || ! -d "$wt_path" ]]; then
+            echo -e "${RED}Error: the create command printed no existing directory: ${DEV_WORKTREE_CREATE_CMD}${NC}" >&2
+            return 1
+        fi
+    else
+        wt_path="${repo:h}/${repo:t}-$(_dev_slug "$branch")"
+        if [[ -e "$wt_path" ]]; then
+            echo -e "${RED}Error: ${wt_path} already exists${NC}" >&2
+            return 1
+        fi
+        if git -C "$repo" show-ref --verify --quiet "refs/heads/${branch}"; then
+            git -C "$repo" worktree add -q "$wt_path" "$branch" >&2 || return 1
+        else
+            git worktree add -q -b "$branch" "$wt_path" >&2 || return 1
+        fi
+    fi
+    print -r -- "${wt_path:A}"
+}
+
+_dev_grid_show_tab() {
+    local grid_session="$1" index="$2"
+    tmux select-window -t "=${grid_session}:${index}"
+    [[ -n "$TMUX" ]] && tmux switch-client -t "=${grid_session}:${index}"
+    return 0
+}
+
 _dev_attach_session() {
     local session_name="$1" message="$2"
     _dev_setup_popup_keybindings
@@ -169,6 +427,9 @@ dev() {
             echo -e "  ${BLUE}dev ls --all${NC}       ...and the popup sessions under each"
             echo -e "  ${BLUE}dev kill <name>${NC}    Kill a dev session and its popups"
             echo -e "  ${BLUE}dev clean${NC}          Remove popups whose session is gone"
+            echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
+            echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
+            echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
             echo -e "  ${BLUE}dev reload${NC}         Reload popup keybindings"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
@@ -298,6 +559,22 @@ dev() {
             else
                 _dev_session_not_found "$display_name"
             fi
+            ;;
+
+        grid)
+            if ! _dev_check_tmux; then
+                return 1
+            fi
+            case "$2" in
+                "") _dev_grid_build ;;
+                status) _dev_grid_status ;;
+                add) _dev_grid_add "$3" ;;
+                *)
+                    echo -e "${RED}Unknown grid command: $2${NC}"
+                    echo -e "${YELLOW}Usage: dev grid [status | add <branch>]${NC}"
+                    return 1
+                    ;;
+            esac
             ;;
 
         clean)
@@ -461,12 +738,7 @@ dev() {
             echo -e "${GREEN}Creating session: ${display_name}${NC}"
 
             tmux new-session -d -s "$session_name" -n "frontend" -c "$DEV_DEFAULT_DIR"
-            # Windows are 1-7 on any config, as `dev help` says: new-session
-            # puts the first window at the server's base-index, 0 on a stock
-            # config, which left `prefix 1` reaching nothing.
-            tmux set-option -t "$session_name" base-index 1
-            local first_index=$(tmux display-message -p -t "$session_name" '#{window_index}')
-            [[ "$first_index" == "1" ]] || tmux move-window -s "${session_name}:${first_index}" -t "$session_name:1"
+            _dev_number_from_one "$session_name"
             tmux new-window -t "$session_name:2" -n "backend" -c "$DEV_DEFAULT_DIR"
             tmux new-window -t "$session_name:3" -n "database" -c "$DEV_DEFAULT_DIR"
             tmux new-window -t "$session_name:4" -n "testing" -c "$DEV_DEFAULT_DIR"
