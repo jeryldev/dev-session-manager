@@ -271,3 +271,10 @@ agent_command() {
     agent_command "$(pane_of '=dev-plain:')"
     [[ "$output" == "ssh-add '$HOME/key' || echo "* ]]
 }
+
+@test "a session name cannot run code through a popup key either" {
+    start_isolated_server "s\$(true>$BATS_TEST_TMPDIR/pwned)"
+    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    press "$(tmux list-panes -a -F '#{pane_id}' | head -1)" j
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}

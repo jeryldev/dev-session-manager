@@ -1470,7 +1470,10 @@ _dev_popup_script() {
     local key='#{?#{@dev_ws_id},#{@dev_ws_id},#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}}'
     local origin='#{?#{@dev_origin},#{@dev_origin},#{pane_id}}'
     local create='SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" "zsh '"${(qq)DEV_SCRIPT}"' __in #{pane_id} '"${(qq)cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
-    local show='; tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""'
+    # Pressed inside the very popup it would open: showing it again would nest
+    # the session inside itself, one more detach to get out. q: makes the
+    # session name a safe sh word whatever it contains.
+    local show='; if [ #{q:session_name} = "$SESSION" ]; then tmux display-message "Already in this popup"; else tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""; fi'
     if [[ "$display" == nodisplay ]]; then
         print -r -- "$create"
     else

@@ -98,3 +98,23 @@ attached() {
     tmux send-keys -t '=dev-myrepo-grid:1' Enter
     until_true '[ "$(tmux list-clients -F "#{client_session}")" = dev-other-grid ]'
 }
+
+@test "prefix a twice reaches the same agent, from the tab or from inside its popup" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    # Again, from inside the popup.
+    press "$PREFIX" a
+    sleep 1
+    [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^ai-')" -eq 1 ]
+    # Not shown inside itself a second time.
+    [ "$(attached "ai-${ws}")" = 1 ]
+    # Close it, then press again from the tab: the same session comes back.
+    press "$PREFIX" d
+    until_true '[ "$(attached "ai-${ws}")" = 0 ]'
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^ai-')" -eq 1 ]
+}
