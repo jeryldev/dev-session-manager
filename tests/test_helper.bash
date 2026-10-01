@@ -94,11 +94,6 @@ teardown_temp_home() {
     fi
 }
 
-# Strip ANSI color codes from output for easier assertion
-strip_colors() {
-    sed 's/\x1b\[[0-9;]*m//g'
-}
-
 # Create a dev session without tripping over the attach.
 #
 # `dev <name>` ends in `tmux attach`, which fails with "open terminal failed"

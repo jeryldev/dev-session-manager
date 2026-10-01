@@ -15,12 +15,17 @@ DEV_SESSION_PREFIX="dev-"
 DEV_DEFAULT_DIR="${DEV_HOME_DIR:-$HOME/code}"
 DEV_AI_CMD="${DEV_AI_CMD:-claude}"
 
-# Colors (use existing shell colors or define defaults)
-: ${RED:='\033[0;31m'}
-: ${GREEN:='\033[0;32m'}
-: ${YELLOW:='\033[0;33m'}
-: ${BLUE:='\033[0;34m'}
-: ${NC:='\033[0m'}
+# Colors are chosen per call, not when this file is sourced: sourced from
+# .zshrc the file is read once, on a terminal, and every later `dev ... | cat`
+# would still get escape codes. Assigned to the caller's locals (zsh scoping is
+# dynamic), so helpers see them and the user's own $RED is never touched.
+_dev_set_colors() {
+    if [[ -t 1 ]]; then
+        RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[0;33m' BLUE='\033[0;34m' NC='\033[0m'
+    else
+        RED='' GREEN='' YELLOW='' BLUE='' NC=''
+    fi
+}
 
 # Check if a command is available
 _dev_has_command() {
@@ -142,6 +147,8 @@ _dev_center_text() {
 dev() {
     local cmd="$1"
     local box_width=56
+    local RED GREEN YELLOW BLUE NC
+    _dev_set_colors
 
     case "$cmd" in
         help|h|-h|--help)

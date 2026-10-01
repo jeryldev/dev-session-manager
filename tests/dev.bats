@@ -203,6 +203,60 @@ SH
     [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t dev-other" ]
 }
 
+# ─── B6: colour only on a terminal (US-4) ───
+
+ESC=$'\033['
+
+# Run a command with its stdout on a pseudo-terminal, so [[ -t 1 ]] is true
+# inside it. Not script(1): the BSD one needs a terminal on its own stdin,
+# which bats never gives it, and its flags differ from util-linux's.
+run_on_tty() {
+    run python3 -c '
+import os, subprocess, sys
+master, slave = os.openpty()
+proc = subprocess.Popen(["sh", "-c", sys.argv[1]], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave)
+os.close(slave)
+out = b""
+while True:
+    try:
+        chunk = os.read(master, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+sys.stdout.buffer.write(out)
+sys.exit(proc.wait())
+' "$1"
+}
+
+@test "executed dev prints no colour codes into a pipe" {
+    run sh -c "zsh '$DEV_ZSH' version | cat"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"v"* ]]
+    [[ "$output" != *"$ESC"* ]]
+}
+
+@test "sourced dev prints no colour codes into a pipe" {
+    # Sourced from .zshrc, a file-scope [[ -t 1 ]] is judged once, on a
+    # terminal, and every later piped command still got colours.
+    run zsh -c "source '$DEV_ZSH' 2>/dev/null; dev version | cat" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"v"* ]]
+    [[ "$output" != *"$ESC"* ]]
+}
+
+@test "dev prints colours on a terminal" {
+    run_on_tty "zsh -c \"source '$DEV_ZSH' 2>/dev/null; dev version\""
+    [[ "$output" == *"$ESC"* ]]
+}
+
+@test "sourcing dev leaves the shell's own colour variables alone" {
+    run zsh -c "RED=mine; source '$DEV_ZSH' 2>/dev/null; dev version >/dev/null; print -r -- \"\$RED|\${+GREEN}\"" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$output" = "mine|0" ]
+}
+
 # ─── _dev_has_command ───
 
 @test "_dev_has_command detects existing command" {
@@ -294,16 +348,14 @@ SH
 
 @test "_dev_check_optional shows checkmark for installed command" {
     run_zsh_func '_dev_check_optional ls "test label" "install hint"'
-    local clean=$(echo "$output" | strip_colors)
-    [[ "$clean" == *"✓"* ]]
-    [[ "$clean" == *"test label"* ]]
+    [[ "$output" == *"✓"* ]]
+    [[ "$output" == *"test label"* ]]
 }
 
 @test "_dev_check_optional shows X for missing command" {
     run_zsh_func '_dev_check_optional nonexistent_xyz "test label" "brew install foo"'
-    local clean=$(echo "$output" | strip_colors)
-    [[ "$clean" == *"✗"* ]]
-    [[ "$clean" == *"brew install foo"* ]]
+    [[ "$output" == *"✗"* ]]
+    [[ "$output" == *"brew install foo"* ]]
 }
 
 # ─── dev help ───
@@ -546,10 +598,9 @@ SH
 
 @test "_dev_session_not_found shows error and tip" {
     run_zsh_func '_dev_session_not_found myproject'
-    local clean=$(echo "$output" | strip_colors)
-    [[ "$clean" == *"✗"* ]]
-    [[ "$clean" == *"myproject"* ]]
-    [[ "$clean" == *"dev ls"* ]]
+    [[ "$output" == *"✗"* ]]
+    [[ "$output" == *"myproject"* ]]
+    [[ "$output" == *"dev ls"* ]]
 }
 
 # ─── _dev_attach_session ───
