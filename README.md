@@ -14,7 +14,8 @@ A lightweight zsh utility for quickly bootstrapping tmux development sessions wi
 ## Requirements
 
 - **zsh**: your shell (comes with macOS, install on Linux with your package manager)
-- **tmux**: terminal multiplexer
+- **tmux 3.3 or newer**: terminal multiplexer (the popups use `display-popup` options added in 3.3)
+- **git**: for the workspace grid
 
 ```bash
 # macOS
@@ -63,6 +64,9 @@ source ~/.zshrc
 ```
 
 ## Usage
+
+`dev` works sourced from `.zshrc` (it is then a shell function) or executed as a command (the
+Homebrew install, or `zsh dev.zsh ...`); both behave the same.
 
 ### Create a session
 
@@ -160,6 +164,10 @@ dev ls
 ```bash
 dev attach myproject
 ```
+
+`dev attach dev-myproject` works too. Inside tmux, `dev attach` (and `dev <name>`) switches the current
+client instead of nesting. A session named like a command (see `dev help` for the reserved names) is
+still reachable with `dev attach`.
 
 ### Kill a session
 

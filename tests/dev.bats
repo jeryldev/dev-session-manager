@@ -973,3 +973,62 @@ sys.exit(proc.wait())
     tmux has-session -t '=dev-proj'
 }
 
+
+# ─── dev help stays true to what dev does (plan Phase 9) ───
+
+reserved_names() {
+    run_dev help
+    printf '%s\n' "$output" | sed -n 's/^Reserved names[^:]*: *//p' | tr ' ' '\n' | grep .
+}
+
+@test "dev help lists the reserved names" {
+    run_dev help
+    [[ "$output" == *"Reserved names"*"grid"* ]]
+}
+
+@test "every reserved name is a command, never a new session" {
+    # Because dev <name> is a catch-all, a name the help calls reserved that
+    # is not really a command would quietly become a session.
+    start_isolated_server keep
+    [ -n "$(reserved_names)" ]
+    local name
+    for name in $(reserved_names); do
+        [[ "$name" == __* ]] && continue
+        zsh -c 'cd "$HOME/code" && source "$1" 2>/dev/null; dev "$2"' _ "$DEV_ZSH" "$name" </dev/null &>/dev/null || true
+        if tmux has-session -t "=dev-${name}" 2>/dev/null; then
+            echo "dev ${name} made a session" >&2
+            return 1
+        fi
+    done
+}
+
+@test "every command dev help shows is reserved" {
+    local reserved commands cmd
+    reserved=" $(reserved_names | tr '\n' ' ') "
+    run_dev help
+    commands="$(printf '%s\n' "$output" | sed -n '/^Commands:/,/^$/p' | sed -n 's/^  dev \([a-z]*\).*/\1/p' | grep . | sort -u)"
+    [ -n "$commands" ]
+    [ -n "$(reserved_names)" ]
+    for cmd in $commands; do
+        [[ "$reserved" == *" $cmd "* ]] || { echo "dev $cmd is not in the reserved list" >&2; return 1; }
+    done
+}
+
+@test "a session name starting with __ is refused" {
+    # dev's own entry points (__agent, ...) start with __.
+    start_isolated_server keep
+    run_dev __mine
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"__"* ]]
+    ! tmux has-session -t '=dev-__mine' 2>/dev/null
+}
+
+@test "dev help warns when tmux is older than 3.3" {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    printf '#!/bin/sh\n[ "$1" = -V ] && echo "tmux 3.2a" && exit 0\nexit 1\n' > "$BATS_TEST_TMPDIR/bin/tmux"
+    chmod +x "$BATS_TEST_TMPDIR/bin/tmux"
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c 'source "$1" 2>/dev/null; dev help' _ "$DEV_ZSH" </dev/null
+    [[ "$output" == *"3.3 or newer"* ]]
+    run_dev help
+    [[ "$output" != *"3.3 or newer"* ]]
+}

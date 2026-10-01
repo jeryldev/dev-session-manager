@@ -16,6 +16,10 @@ DEV_SCRIPT="${${(%):-%x}:A}"
 # Configuration
 DEV_SESSION_PREFIX="dev-"
 
+# Names `dev <name>` cannot use, because they are commands. `dev help` prints
+# this list, and a test runs each one to prove it really is a command.
+DEV_RESERVED_NAMES=(a agent attach clean config grid h help k kill list ls reload t tmux v version)
+
 # Settings resolve env > config file > default, at the moment they are used:
 # the same file then configures a sourced and an executed (Homebrew) install,
 # where only exported variables would otherwise reach the latter.
@@ -222,10 +226,15 @@ _dev_show_prerequisites() {
         echo -e "  ${RED}✗${NC} zsh (not detected)"
     fi
 
-    # Check tmux
+    # Check tmux. 3.3 is the floor: the popups use display-popup -b and -T.
     if _dev_has_command tmux; then
         local tmux_ver=$(tmux -V 2>/dev/null | cut -d' ' -f2)
-        echo -e "  ${GREEN}✓${NC} tmux ($tmux_ver)"
+        local major="${tmux_ver%%.*}" minor="${${tmux_ver#*.}%%[^0-9]*}"
+        if (( major < 3 || (major == 3 && minor < 3) )); then
+            echo -e "  ${RED}✗${NC} tmux ($tmux_ver) — dev needs tmux 3.3 or newer for its popups"
+        else
+            echo -e "  ${GREEN}✓${NC} tmux ($tmux_ver)"
+        fi
     else
         echo -e "  ${RED}✗${NC} tmux (not installed)"
         echo -e "      ${YELLOW}Install: brew install tmux${NC}"
@@ -265,6 +274,10 @@ _dev_validate_name() {
     fi
     if [[ "$name" =~ [^a-zA-Z0-9_-] ]]; then
         echo -e "${RED}Error: Session name can only contain letters, numbers, hyphens, and underscores${NC}"
+        return 1
+    fi
+    if [[ "$name" == __* ]]; then
+        echo -e "${RED}Error: names starting with __ are reserved for dev itself${NC}"
         return 1
     fi
     return 0
@@ -945,6 +958,9 @@ dev() {
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
             echo -e "  ${BLUE}dev version${NC}        Show version"
+            echo ""
+            echo -e "Reserved names (not usable as session names): ${DEV_RESERVED_NAMES[*]}"
+            echo -e "${BLUE}Tip: 'dev attach <name>' reaches a session whose name is one of these${NC}"
             echo ""
             echo -e "${YELLOW}Examples:${NC}"
             echo -e "  ${BLUE}dev myproject${NC}      Create 'dev-myproject' session"
