@@ -32,7 +32,11 @@ press_coordinator() {
 }
 
 coordinators() {
-    tmux list-sessions -F '#{session_id}|#{session_name}|#{@dev_coordinator_of}' | awk -F'|' '$3 != ""'
+    local id name
+    tmux list-sessions -F '#{session_id}|#{session_name}' | while IFS='|' read -r id name; do
+        [ -n "$(text_opt -t "$id" @dev_coordinator_of)" ] && echo "${id}|${name}|$(text_opt -t "$id" @dev_coordinator_of)"
+    done
+    return 0
 }
 
 @test "prefix S from any tab reaches the same coordinator" {
@@ -51,7 +55,7 @@ coordinators() {
     press_coordinator "$(pane_of '=dev-myrepo-grid:2')"
     local name; name="$(coordinators | cut -d'|' -f2)"
     [ "$(tmux show-environment -t "=$name" DEV_GRID)" = "DEV_GRID=$REPO" ]
-    [ "$(tmux show-options -w -t "=$name:" -v @dev_workspace)" = "$REPO" ]
+    [ "$(text_opt -w -t "=$name:" @dev_workspace)" = "$REPO" ]
 }
 
 @test "the coordinator resumes the same conversation after a rebuild" {

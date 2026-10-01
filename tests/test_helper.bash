@@ -134,3 +134,17 @@ run_grid() {
 }
 
 windows() { tmux list-windows -t "=$1:" -F '#{window_index} #{window_name}'; }
+
+# A tmux option dev stores as text: hex-encoded ("hex:..."), because tmux 3.3-3.4
+# rewrite `$` and non-ASCII on the way out. Decoded here in bash, rather than by
+# sourcing dev.zsh, which would bind keys mid-test.
+text_opt() {
+    local value hex
+    value="$(tmux show-options -qv "$@")"
+    if [[ "$value" == hex:* ]]; then
+        hex="${value#hex:}"
+        printf '%b' "$(printf '%s' "$hex" | sed 's/../\\x&/g')"
+    else
+        printf '%s' "$value"
+    fi
+}

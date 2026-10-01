@@ -48,7 +48,7 @@ teardown() {
     git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
     run_grid "$repo"
     [ "$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_current_path}')" = "$CODE/myrepo-feat" ]
-    [ "$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_workspace)" = "$CODE/myrepo-feat" ]
+    [ "$(text_opt -w -t '=dev-myrepo-grid:2' @dev_workspace)" = "$CODE/myrepo-feat" ]
 }
 
 @test "a detached worktree still gets a tab" {
@@ -82,7 +82,7 @@ teardown() {
     # D9: the stamp, not the name, says this session is a grid.
     local repo; repo="$(make_repo)"
     run_grid "$repo"
-    [ "$(tmux show-options -t '=dev-myrepo-grid:' -v @dev_grid)" = "$repo" ]
+    [ "$(text_opt -t '=dev-myrepo-grid:' @dev_grid)" = "$repo" ]
 }
 
 @test "running dev grid again reuses the grid" {
@@ -211,7 +211,7 @@ add_branch() {
     [ "$(git -C "$CODE/myrepo-fix-1" branch --show-current)" = "fix-1" ]
     run windows dev-myrepo-grid
     [ "$output" = $'1 myrepo\n2 myrepo-feat\n3 myrepo-fix-1' ]
-    [ "$(tmux show-options -w -t '=dev-myrepo-grid:3' -v @dev_workspace)" = "$CODE/myrepo-fix-1" ]
+    [ "$(text_opt -w -t '=dev-myrepo-grid:3' @dev_workspace)" = "$CODE/myrepo-fix-1" ]
 }
 
 @test "dev grid add switches the grid to the new tab" {
@@ -763,7 +763,7 @@ many_worktrees() {
     export DEV_WORKTREE_CREATE_CMD="echo ../myrepo-feat2"
     run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid add other' _ "$CODE/nested/deep/wt" "$DEV_ZSH" </dev/null
     [ "$status" -eq 0 ]
-    [ "$(tmux show-options -w -t '=dev-myrepo-grid:3' -v @dev_workspace)" = "$CODE/myrepo-feat2" ]
+    [ "$(text_opt -w -t '=dev-myrepo-grid:3' @dev_workspace)" = "$CODE/myrepo-feat2" ]
 }
 
 @test "a # in a worktree path or label is taken literally, not as a tmux format" {
