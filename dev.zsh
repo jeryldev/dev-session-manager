@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="2.3.0"
+DEV_VERSION="3.0.0"
 
 # This file, sourced or executed: key bindings run it again from tmux.
 DEV_SCRIPT="${${(%):-%x}:A}"
