@@ -27,6 +27,7 @@ typeset -gA _DEV_CFG_ENV=(
     windows DEV_WINDOWS
     worktree_create_cmd DEV_WORKTREE_CREATE_CMD
     agent_launch_cmd DEV_AGENT_LAUNCH_CMD
+    watch_cmd DEV_WATCH_CMD
     key_agent DEV_KEY_AGENT
     key_term DEV_KEY_TERM
     key_kb DEV_KEY_KB
@@ -951,6 +952,7 @@ dev() {
                 start) shift 2; _dev_agent_start "$@" ;;
                 send) shift 2; _dev_agent_send "$@" ;;
                 status) _dev_agent_status "$3" ;;
+                watch) shift 2; _dev_agent_watch "$@" ;;
                 overview)
                     local here="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
                     _dev_overview "$here" "$(tmux display-message -p '#{client_name}' 2>/dev/null)"
@@ -1684,19 +1686,11 @@ _dev_json_str() {
     print -rn -- "\"${value}\""
 }
 
-_dev_agent_status() {
-    local json=0
-    [[ "$1" == "--json" ]] && json=1
-    local repo grid_session
-    _dev_agent_grid || return 1
-    local -a rows=(${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{window_name}|#{@dev_workspace}|#{@dev_ws_id}|#{@dev_agent_started}')"})
-    local row index name workspace ws_id started branch changes agent detail ctx session screen width=9
-    for row in "${rows[@]}"; do
-        name="${${row#*|}%%|*}"
-        (( ${#name} > width )) && width=${#name}
-    done
-    (( json )) || printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "#" "workspace" "branch" "state" "agent" "detail"
-    for row in "${rows[@]}"; do
+# One row per workspace tab, "index|label|path|branch|changes|agent|ctx|detail",
+# shared by status and watch so they can never disagree.
+_dev_agent_rows() {
+    local row index name workspace ws_id started branch changes agent detail ctx session screen
+    for row in ${(f)"$(tmux list-windows -t "=${grid_session}:" -F '#{window_index}|#{window_name}|#{@dev_workspace}|#{@dev_ws_id}|#{@dev_agent_started}')"}; do
         IFS='|' read -r index name workspace ws_id started <<< "$row"
         [[ -n "$workspace" ]] || continue
         branch="$(git -C "$workspace" branch --show-current 2>/dev/null)"
@@ -1713,6 +1707,24 @@ _dev_agent_status() {
         else
             agent=none
         fi
+        print -r -- "${index}|${name}|${workspace}|${branch}|${changes}|${agent}|${ctx}|${detail//|//}"
+    done
+}
+
+_dev_agent_status() {
+    local json=0
+    [[ "$1" == "--json" ]] && json=1
+    local repo grid_session
+    _dev_agent_grid || return 1
+    local -a rows=(${(f)"$(_dev_agent_rows)"})
+    local row index name workspace branch changes agent ctx detail width=9
+    for row in "${rows[@]}"; do
+        name="${${row#*|}%%|*}"
+        (( ${#name} > width )) && width=${#name}
+    done
+    (( json )) || printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "#" "workspace" "branch" "state" "agent" "detail"
+    for row in "${rows[@]}"; do
+        IFS='|' read -r index name workspace branch changes agent ctx detail <<< "$row"
         if (( json )); then
             print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${changes},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null}}"
         else
@@ -1720,6 +1732,106 @@ _dev_agent_status() {
             printf "  %-3s %-${width}s  %-24s %-10s %-8s %s\n" "$index" "$name" "$branch" "$changes" "$agent" "${detail}${ctx:+ (ctx ${ctx}%)}"
         fi
     done
+}
+
+# Status, compared over time. Edge-triggered: one event per change, never one
+# per poll. A heartbeat lists every workspace even when nothing changed, and a
+# final line says the watch stopped and why, so silence never means all clear.
+# Read-only, except --notify's attention marker on a tab.
+_dev_agent_watch() {
+    zmodload zsh/datetime
+    local interval=10 every=1800 for_secs=0 json=0 notify=0 ctx_limit=90
+    while (( $# )); do
+        case "$1" in
+            --interval) interval="$2"; shift 2 ;;
+            --every) every="$2"; shift 2 ;;
+            --for) for_secs="$2"; shift 2 ;;
+            --ctx) ctx_limit="$2"; shift 2 ;;
+            --json) json=1; shift ;;
+            --notify) notify=1; shift ;;
+            *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+        esac
+    done
+    local repo grid_session
+    _dev_agent_grid || return 1
+    local watch_cmd="$(_dev_cfg watch_cmd)"
+    local started_at=$EPOCHSECONDS last_beat=$EPOCHSECONDS reason="ended"
+
+    _dev_watch_emit() {
+        local event="$1" ws="$2" from="$3" to="$4" detail="$5" ts="$(strftime '%Y-%m-%dT%H:%M:%S' $EPOCHSECONDS)"
+        if (( json )); then
+            print -r -- "{\"ts\":\"${ts}\",\"event\":\"${event}\",\"ws\":$(_dev_json_str "$ws"),\"from\":$(_dev_json_str "$from"),\"to\":$(_dev_json_str "$to"),\"detail\":$(_dev_json_str "$detail")}"
+        else
+            case "$event" in
+                change) print -r -- "${ts}  tab ${ws}: ${from} → ${to}${detail:+  ${detail}}" ;;
+                *) print -r -- "${ts}  ${event}: ${detail}" ;;
+            esac
+        fi
+    }
+
+    _dev_watch_beat() {
+        local -a parts
+        local key
+        for key in ${(on)${(k)prev_state}}; do
+            parts+=("${key} ${prev_label[$key]} ${prev_state[$key]}")
+        done
+        _dev_watch_emit heartbeat "*" "" "" "${(j:, :)parts}"
+        if [[ -n "$watch_cmd" ]]; then
+            local out rc line
+            out="$(cd "$repo" && sh -c "$watch_cmd" 2>&1)"
+            rc=$?
+            for line in ${(f)out}; do
+                _dev_watch_emit repo "*" "" "" "$line"
+            done
+            (( rc )) && _dev_watch_emit repo "*" "" "" "watch_cmd failed (exit ${rc})"
+        fi
+    }
+
+    typeset -A prev_state prev_label prev_over
+    local row index name workspace branch changes agent ctx detail
+    for row in ${(f)"$(_dev_agent_rows)"}; do
+        IFS='|' read -r index name workspace branch changes agent ctx detail <<< "$row"
+        prev_state[$index]="$agent" prev_label[$index]="$name"
+        [[ -n "$ctx" ]] && (( ctx >= ctx_limit )) && prev_over[$index]=1
+    done
+    trap 'reason="terminated"; return 143' TERM
+    trap 'reason="interrupted"; return 130' INT
+    {
+        _dev_watch_beat
+        while true; do
+            if (( for_secs && EPOCHSECONDS - started_at >= for_secs )); then
+                reason="--for elapsed"
+                break
+            fi
+            sleep "$interval"
+            for row in ${(f)"$(_dev_agent_rows)"}; do
+                IFS='|' read -r index name workspace branch changes agent ctx detail <<< "$row"
+                prev_label[$index]="$name"
+                if [[ "${prev_state[$index]}" != "$agent" ]]; then
+                    _dev_watch_emit change "$index" "${prev_state[$index]:-none}" "$agent" "$detail"
+                    if (( notify )) && [[ "$agent" == (waiting|idle|dead|unknown) ]]; then
+                        tmux set-option -w -t "=${grid_session}:${index}" @dev_attention "$agent"
+                        tmux display-message "dev: tab ${index} (${name}) is ${agent}" 2>/dev/null
+                    fi
+                    prev_state[$index]="$agent"
+                fi
+                if [[ -n "$ctx" ]] && (( ctx >= ctx_limit )); then
+                    if [[ -z "${prev_over[$index]}" ]]; then
+                        _dev_watch_emit context "$index" "" "" "tab ${index} context ${ctx}% (≥ ${ctx_limit}%)"
+                        prev_over[$index]=1
+                    fi
+                else
+                    prev_over[$index]=""
+                fi
+            done
+            if (( EPOCHSECONDS - last_beat >= every )); then
+                _dev_watch_beat
+                last_beat=$EPOCHSECONDS
+            fi
+        done
+    } always {
+        _dev_watch_emit stopped "*" "" "" "watch stopped: ${reason}"
+    }
 }
 
 # ─── prefix S (the coordinator) and prefix O (the overview) ───

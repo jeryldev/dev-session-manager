@@ -108,7 +108,12 @@ dev agent status              # every tab: branch, changes, and whether its agen
 dev agent start 2             # start tab 2's agent: the same one prefix + a opens
 dev agent send 2 "run the tests"         # typed, submitted, and confirmed to have arrived
 dev agent send 2 --file brief.md         # long briefs go by file; one short line points at it
+dev agent watch --notify      # one line per change (working → waiting, idle, dead, unknown), a
+                              # heartbeat every 30 min, and a last line when it stops; --json too
 ```
+
+`watch` runs `watch_cmd` (or `DEV_WATCH_CMD`) at each heartbeat and passes its output through, so a
+repo can add its own checks — CI or review status, say.
 
 `prefix + S` opens the grid's **coordinator**: one agent per grid, started in the repo root, whose job
 is to brief and check on the tab agents with `dev agent ...` (it finds its grid through `DEV_GRID`).
@@ -299,6 +304,7 @@ variable overrides the file for as long as it is set.
 | `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N` | Popup keys (after `prefix`) |
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
+| `watch_cmd` | `DEV_WATCH_CMD` | unset | Run at each `dev agent watch` heartbeat; its output becomes events |
 
 To use environment variables instead, where you set them depends on how you installed.
 
