@@ -36,18 +36,26 @@ switch_to() {
 }
 
 # Runs the watch in the background for a bounded time; output to $OUT.
+# Returns once the watch has taken its first look (its opening heartbeat), so
+# a screen changed afterwards is a change it sees, however loaded the machine.
 watch_for() {
     zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev agent watch "$@"' _ "$REPO" "$DEV_ZSH" --interval 1 "$@" </dev/null >"$OUT" 2>&1 &
     WATCH=$!
+    local i
+    for i in $(seq 1 100); do
+        grep -q 'heartbeat' "$OUT" 2>/dev/null && return 0
+        sleep 0.2
+    done
 }
 
 finish() { wait "$WATCH"; }
 
 @test "a change of state is one event, not one per poll" {
     # US-32.2/32.12
+    # Generous time: under a full suite's load a 1s poll can slip.
     start_agent_showing claude-2.1.286-working.txt
-    watch_for --for 5
-    sleep 1.5
+    watch_for --for 8
+    sleep 2
     switch_to claude-2.1.286-idle.txt
     finish
     [ "$(grep -c 'working → idle' "$OUT")" -eq 1 ]
@@ -59,7 +67,7 @@ finish() { wait "$WATCH"; }
 @test "an agent waiting for an answer is reported with its question" {
     # US-32.1
     start_agent_showing claude-2.1.286-working.txt
-    watch_for --for 4
+    watch_for --for 8
     sleep 1.5
     switch_to claude-2.1.286-waiting-trust.txt
     finish
@@ -69,7 +77,7 @@ finish() { wait "$WATCH"; }
 @test "an agent that dies is reported dead, never idle" {
     # US-32.3
     start_agent_showing claude-2.1.286-idle.txt
-    watch_for --for 4
+    watch_for --for 8
     sleep 1.5
     tmux kill-session -t "=${AGENT}"
     finish
@@ -79,7 +87,7 @@ finish() { wait "$WATCH"; }
 @test "a screen it cannot read is one unknown event" {
     # US-32.5
     start_agent_showing claude-2.1.286-idle.txt
-    watch_for --for 5
+    watch_for --for 8
     sleep 1.5
     switch_to unknown-screen.txt
     finish
@@ -89,7 +97,7 @@ finish() { wait "$WATCH"; }
 @test "crossing the context threshold is one event" {
     # US-32.4
     start_agent_showing claude-2.1.286-idle.txt
-    watch_for --for 5 --ctx 5
+    watch_for --for 8 --ctx 5
     sleep 1.5
     switch_to claude-2.1.286-idle-after-reply.txt
     finish
@@ -99,7 +107,7 @@ finish() { wait "$WATCH"; }
 @test "with nothing changing, a heartbeat still lists every workspace" {
     # US-32.6: silence is never the signal.
     start_agent_showing claude-2.1.286-idle.txt
-    watch_for --for 4 --every 2
+    watch_for --for 8 --every 2
     finish
     grep -q 'heartbeat.*1 myrepo none.*2 myrepo-feat idle' "$OUT"
 }
@@ -107,7 +115,7 @@ finish() { wait "$WATCH"; }
 @test "--json prints one parseable object per line with stable keys" {
     # US-32.7
     start_agent_showing claude-2.1.286-working.txt
-    watch_for --for 4 --every 2 --json
+    watch_for --for 8 --every 2 --json
     sleep 1.5
     switch_to claude-2.1.286-idle.txt
     finish
@@ -137,7 +145,7 @@ PY
 @test "--notify marks the tab that needs attention" {
     # US-32.9
     start_agent_showing claude-2.1.286-working.txt
-    watch_for --for 4 --notify
+    watch_for --for 8 --notify
     sleep 1.5
     switch_to claude-2.1.286-waiting-trust.txt
     finish
@@ -168,7 +176,7 @@ PY
 
 @test "a tab added during the watch is not a none → none change" {
     start_agent_showing claude-2.1.286-idle.txt
-    watch_for --for 4
+    watch_for --for 8
     sleep 1.5
     zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid add later' _ "$REPO" "$DEV_ZSH" </dev/null >/dev/null
     finish

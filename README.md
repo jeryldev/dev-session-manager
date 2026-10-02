@@ -122,8 +122,10 @@ repo can add its own checks — CI or review status, say.
 
 `prefix + S` opens the grid's **coordinator**: one agent per grid, started in the repo root, whose job
 is to brief and check on the tab agents with `dev agent ...` (it finds its grid through `DEV_GRID`).
-`prefix + O` opens a read-only **overview** of every running tab agent, tiled; closing it closes it,
-so the agents go back to their full size.
+`prefix + O` opens the **dashboard**: a box for every tab, with its branch, uncommitted changes, and
+its agent's state (working, idle, **waiting** with the question, dead, or none), refreshed every two
+seconds. Press a tab's number to select it, Enter to go to it, `a` to open its agent, `s` to start
+one, `q` to close. It never types into an agent.
 
 ### Choosing the workspaces
 
@@ -253,7 +255,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
 | `prefix + S` | The grid's coordinator agent | one per grid |
-| `prefix + O` | Overview of the grid's agents | read-only, closed when dismissed |
+| `prefix + O` | Dashboard: every tab and its agent | 1-9 select, Enter go, a open agent, q close |
 
 All popups open at 90% x 90% with a single border.
 

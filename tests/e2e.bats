@@ -35,10 +35,11 @@ PREFIX=$'\x02'
 
 press() { printf '%s' "$@" > "$KEYS"; }
 
-# Poll a condition for up to ~6s; fail with the condition if it never holds.
+# Poll a condition for up to ~15s (headroom for a loaded machine); fail with
+# the condition if it never holds.
 until_true() {
     local i
-    for i in $(seq 1 30); do
+    for i in $(seq 1 75); do
         eval "$1" && return 0
         sleep 0.2
     done
@@ -76,12 +77,25 @@ attached() {
     [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^coord-')" -eq 1 ]
 }
 
-@test "prefix O shows the agents and is gone once dismissed" {
-    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent start 2' _ "$REPO" "$DEV_ZSH" </dev/null
+@test "prefix O shows a box per tab; a digit and Enter go to that tab" {
     press "$PREFIX" O
-    until_true '[ "$(attached overview-myrepo-grid)" = 1 ]'
-    press "$PREFIX" d
-    until_true '[ -z "$(tmux list-sessions -F "#{session_name}" | grep "^overview-")" ]'
+    until_true 'grep -aq "q close" "$SCREEN"'
+    grep -aq "1 myrepo" "$SCREEN"
+    grep -aq "2 myrepo-feat" "$SCREEN"
+    press 2
+    sleep 0.5
+    press $'\r'
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+}
+
+@test "in the dashboard, a opens the selected tab's agent" {
+    press "$PREFIX" O
+    until_true 'grep -aq "q close" "$SCREEN"'
+    press 2
+    sleep 0.5
+    press a
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
 }
 
 @test "prefix N asks for a branch and opens it as the next tab" {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# prefix S, the grid's coordinator, and prefix O, the overview of its agents
+# prefix S, the grid's coordinator (and the dashboard key binding next to it)
 # (plan Phase 4b, US-33, D16, D14).
 
 export BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-60}"
@@ -143,54 +143,6 @@ coordinators() {
     [[ "$(tmux list-keys -T prefix | awk '$4 == "O"')" == *"display-message mine"* ]]
 }
 
-# ─── prefix O: the overview (US-23 retargeted, D14, D16) ───
-
-start_agent() {
-    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent start "$3"' _ "$REPO" "$DEV_ZSH" "$2" </dev/null
-}
-
-build_overview() {
-    run zsh -c 'source "$1" 2>/dev/null; _dev_overview_build "$2"' _ "$DEV_ZSH" "$1" </dev/null
-}
-
-@test "the overview has one read-only pane per running workspace agent" {
-    # US-23.1/23.2/33.12: the agents the tabs use, not copies; no coordinator.
-    grid_with_feat
-    start_agent "$REPO" 1
-    start_agent "$REPO" 2
-    press_coordinator "$(pane_of '=dev-myrepo-grid:1')"
-    build_overview "$(pane_of '=dev-myrepo-grid:1')"
-    [ "$status" -eq 0 ]
-    local name="$output"
-    [ "$(tmux list-panes -t "=${name}:" | wc -l | tr -d ' ')" -eq 2 ]
-    local commands; commands="$(tmux list-panes -t "=${name}:" -F '#{pane_start_command}')"
-    [[ "$commands" == *"attach-session -r -t '=ai-myrepo-"* ]]
-    [[ "$commands" != *"coord-"* ]]
-}
-
-@test "no agents running means no overview" {
-    grid_with_feat
-    build_overview "$(pane_of '=dev-myrepo-grid:1')"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"No workspace agents"* ]]
-    [ -z "$(tmux list-sessions -F '#{session_name}' | grep '^overview-')" ]
-}
-
-@test "dismissing the overview popup kills the overview" {
-    # US-23.3: left alive, it keeps every agent clamped to its pane size.
-    run zsh -c 'source "$1" 2>/dev/null; _dev_overview_popup_command overview-x' _ "$DEV_ZSH" </dev/null
-    [ "$output" = "tmux attach-session -t '=overview-x'; tmux kill-session -t '=overview-x'" ]
-}
-
-@test "dev grid kill closes the overview first" {
-    # D14 / US-21.4
-    grid_with_feat
-    start_agent "$REPO" 2
-    build_overview "$(pane_of '=dev-myrepo-grid:1')"
-    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid kill' _ "$REPO" "$DEV_ZSH" </dev/null
-    [ -z "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^overview-')" ]
-}
-
 @test "prefix a inside the coordinator does not open its conversation twice" {
     grid_with_feat
     press_coordinator "$(pane_of '=dev-myrepo-grid:1')"
@@ -204,14 +156,13 @@ build_overview() {
     [[ "$output" != *"$sid"* ]]
 }
 
-@test "prefix O and prefix S say why they did nothing, and exit cleanly" {
+@test "prefix O and prefix S outside a grid say why, and exit cleanly" {
     # A non-zero exit from a key's run-shell makes tmux dump "... returned 1"
     # over the user's window; the display-message is the whole answer.
-    grid_with_feat
-    run zsh "$DEV_ZSH" __overview "$(pane_of '=dev-myrepo-grid:1')" "" </dev/null
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"No workspace agents"* ]]
     start_isolated_server dev-plain
+    run zsh "$DEV_ZSH" __dashboard "$(pane_of '=dev-plain:')" "" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No grid here"* ]]
     run zsh "$DEV_ZSH" __coordinator "$(pane_of '=dev-plain:')" "" </dev/null
     [ "$status" -eq 0 ]
     [[ "$output" == *"No grid here"* ]]

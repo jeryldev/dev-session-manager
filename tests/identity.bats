@@ -116,10 +116,13 @@ agent_command() {
 
 @test "a popup inside a non-grid window's popup does not nest either" {
     start_isolated_server dev-plain
+    # A fixed name: tmux's automatic one follows the running command, and can
+    # change between the key press and the check under load.
+    tmux rename-window -t '=dev-plain:' plain
     zsh -c "source '$DEV_ZSH'" </dev/null
     press '=dev-plain:' j
     local popup; popup="$(tmux list-sessions -F '#{session_name}' | grep '^term-')"
-    [ "$popup" = "term-dev-plain-0-$(tmux display-message -p -t '=dev-plain:' '#{window_name}' | sed 's/[^a-zA-Z0-9_-]/-/g')" ]
+    [ "$popup" = "term-dev-plain-0-plain" ]
     press "=${popup}:" j
     [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^term-')" -eq 1 ]
 }
