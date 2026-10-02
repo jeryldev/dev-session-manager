@@ -122,3 +122,14 @@ attached() {
     until_true '[ "$(attached "ai-${ws}")" = 1 ]'
     [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^ai-')" -eq 1 ]
 }
+
+@test "prefix X in a grid tab asks to remove that tab, and y removes it" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    press "$PREFIX" X
+    until_true 'grep -aq "Remove tab 2" "$SCREEN"'
+    ! grep -aq "not a grid tab" "$SCREEN"
+    press y $'\r'
+    until_true '[ ! -d "$CODE/myrepo-feat" ]'
+    until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
+}

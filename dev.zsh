@@ -1930,7 +1930,7 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=3
+_DEV_BINDINGS_REV=4
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
@@ -1999,9 +1999,10 @@ _dev_setup_popup_keybindings() {
     fi
     [[ -n "${wanted[key_coordinator]}" ]] && _dev_bind_key "${wanted[key_coordinator]}" "Coordinator" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __coordinator '#{pane_id}' '#{client_name}'"
+    # Through run-shell: it expands #{pane_id} to the pane the key was pressed
+    # in, which display-popup's own command arguments do not.
     [[ -n "${wanted[key_remove]}" ]] && _dev_bind_key "${wanted[key_remove]}" "Remove this tab" \
-        display-popup -E -w 90% -h 90% -b single -T " Remove this tab " \
-        zsh "$DEV_SCRIPT" grid remove --pane "#{pane_id}"
+        run-shell "tmux display-popup -E -w 90% -h 90% -b single -T ' Remove this tab ' \"zsh ${(qq)DEV_SCRIPT} grid remove --pane '#{pane_id}'\""
     [[ -n "${wanted[key_overview]}" ]] && _dev_bind_key "${wanted[key_overview]}" "Overview" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __overview '#{pane_id}' '#{client_name}'"
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then
