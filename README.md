@@ -276,6 +276,8 @@ Use `dev reload` to refresh keybindings after installing a new tool.
 - **Open**: `prefix + a/k/g/j` opens the popup
 - **Close**: `prefix + d` (detach) closes the popup, session stays alive
 - **Reopen**: same keybinding resumes exactly where you left off
+- **Which board kb opens**: popups start in the window's folder (a grid tab's worktree), so kb
+  opens the board named after that folder or its git repository, worktrees included (kb 0.4+)
 
 ### Session identity
 
