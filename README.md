@@ -283,6 +283,11 @@ Every key is configurable (`dev config set key_agent V`; also `key_term`, `key_g
 `key_new`, `key_coordinator`, `key_overview`, `key_remove`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
 keys it skipped, and `dev help` marks them `not bound`.
 
+Two of tmux's own defaults are replaced, since they are not yours: `prefix + 1`-`9` (dev's digits
+still select the tab), and tmux 3.8's `prefix + g`, its floating-pane move menu, which arrived after
+dev's git popup had `g`. To keep that menu, `dev config set key_git <another key>`, then
+`tmux bind-key g switch-client -T move` (or restart tmux) to bring it back.
+
 ### Setup
 
 No extra configuration needed. Keybindings are set up automatically when `dev.zsh` is sourced inside a tmux session. Optional tools (kb, lazygit) are only bound if installed.

@@ -154,3 +154,14 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
     [[ "$(prefix_key 3)" == *"__agent"* ]]
     [[ "$(prefix_key 4)" == *"__switch 4 "* ]]
 }
+
+@test "tmux 3.8's own prefix g (its move menu) is replaced, like the stock digits" {
+    # tmux 3.8 binds prefix g to switch-client -T move by default; dev's git
+    # popup has had g since 2.1. Bound here so every tmux version shows it.
+    tmux bind-key g switch-client -T move
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/bin/lazygit"; chmod +x "$BATS_TEST_TMPDIR/bin/lazygit"
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    [[ "$(prefix_key g)" == *"lazygit"* ]]
+    [[ "$output" != *"prefix g"* ]]
+}

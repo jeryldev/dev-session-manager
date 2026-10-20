@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="3.2.0"
+DEV_VERSION="3.2.1"
 
 # This file, sourced or executed: key bindings run it again from tmux. Made
 # absolute but not resolved: Homebrew's bin/dev is a symlink into a versioned
@@ -1926,10 +1926,12 @@ _dev_is_dev_binding() {
        "$1" == *" __switch "* ]]
 }
 
-# tmux's own prefix 1-9, which dev may replace: its digits still select the
-# tab outside a popup.
-_dev_is_stock_digit() {
-    [[ "$1" == [1-9] && "$2" == *"select-window -t :=$1" ]]
+# tmux's own bindings that dev may replace, as tmux prints them: prefix 1-9
+# (dev's digits still select the tab outside a popup), and tmux 3.8's prefix g,
+# its floating-pane move menu, which came after dev's git popup had g.
+_dev_is_stock_binding() {
+    [[ ( "$1" == [1-9] && "$2" == *"select-window -t :=$1" ) ||
+       ( "$1" == g && "$2" == *"switch-client -T move" ) ]]
 }
 
 # The prefix-table line binding a key, or nothing. Matched by position after
@@ -1952,7 +1954,7 @@ _dev_bind_key() {
     local key="$1" label="$2"
     shift 2
     local current="$(_dev_prefix_binding "$key")"
-    if [[ -n "$current" ]] && ! _dev_is_dev_binding "$current" && ! _dev_is_stock_digit "$key" "$current"; then
+    if [[ -n "$current" ]] && ! _dev_is_dev_binding "$current" && ! _dev_is_stock_binding "$key" "$current"; then
         local held="${current#*${key} }"
         held="${held##[[:space:]]#}"
         _dev_key_conflicts+=("${key}=${held}")
