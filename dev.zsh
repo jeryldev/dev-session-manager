@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="3.1.0"
+DEV_VERSION="3.2.0"
 
 # This file, sourced or executed: key bindings run it again from tmux. Made
 # absolute but not resolved: Homebrew's bin/dev is a symlink into a versioned
@@ -1272,6 +1272,7 @@ dev() {
                     printf "  ${BLUE}%-17s${NC} %s\n" "Prefix ${k}" "$label"
                 fi
             done
+            printf "  ${BLUE}%-17s${NC} %s\n" "Prefix 1-9" "Tab N; inside an agent or the coordinator, tab N's agent"
             echo ""
             ;;
 
@@ -1441,6 +1442,11 @@ dev() {
         # __overview: what 3.0.0's prefix O ran, until the key is rebound.
         __dashboard|__overview)
             _dev_dashboard "$2" "$3" || true
+            ;;
+
+        # What prefix 1-9 runs inside an agent popup or the coordinator.
+        __switch)
+            _dev_switch_agent "$2" "$3" "$4" || true
             ;;
 
         __in)
@@ -1883,7 +1889,14 @@ _dev_plural() {
 _dev_is_dev_binding() {
     [[ ( "$1" == *"display-popup -w 90% -h 90% -b single"* && "$1" == *'SESSION='* ) ||
        "$1" == *"grid add --prompt"* || "$1" == *"grid remove --pane"* ||
-       "$1" == *" __coordinator "* || "$1" == *" __overview "* || "$1" == *" __dashboard "* ]]
+       "$1" == *" __coordinator "* || "$1" == *" __overview "* || "$1" == *" __dashboard "* ||
+       "$1" == *" __switch "* ]]
+}
+
+# tmux's own prefix 1-9, which dev may replace: its digits still select the
+# tab outside a popup.
+_dev_is_stock_digit() {
+    [[ "$1" == [1-9] && "$2" == *"select-window -t :=$1" ]]
 }
 
 # The prefix-table line binding a key, or nothing. Matched by position after
@@ -1906,7 +1919,7 @@ _dev_bind_key() {
     local key="$1" label="$2"
     shift 2
     local current="$(_dev_prefix_binding "$key")"
-    if [[ -n "$current" ]] && ! _dev_is_dev_binding "$current"; then
+    if [[ -n "$current" ]] && ! _dev_is_dev_binding "$current" && ! _dev_is_stock_digit "$key" "$current"; then
         local held="${current#*${key} }"
         held="${held##[[:space:]]#}"
         _dev_key_conflicts+=("${key}=${held}")
@@ -1927,7 +1940,7 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=5
+_DEV_BINDINGS_REV=6
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
@@ -1972,6 +1985,8 @@ _dev_setup_popup_keybindings() {
     tmux list-keys -T prefix 2>/dev/null | while IFS= read -r line; do
         bound="$(_dev_prefix_binding_key "$line")"
         _dev_is_dev_binding "$line" || continue
+        # The digits are always dev's once bound; unbinding one would lose the tab.
+        [[ "$bound" == [1-9] ]] && continue
         [[ " ${(v)wanted} " == *" ${bound} "* ]] || tmux unbind-key -T prefix "$bound"
     done
 
@@ -2005,6 +2020,16 @@ _dev_setup_popup_keybindings() {
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then
         _dev_bind_popup "${wanted[key_git]}" "Git UI" lg lazygit
     fi
+    # The digits follow context: in a tab they select a tab, as tmux's own do;
+    # in an agent popup or the coordinator they open that tab's agent. The
+    # branch is tmux's, so a press in a tab starts no shell.
+    local digit in_agent='#{||:#{==:#{@dev_popup_kind},ai},#{==:#{@dev_popup_kind},coordinator}}'
+    for digit in {1..9}; do
+        [[ " ${(v)wanted} " == *" ${digit} "* ]] && continue
+        _dev_bind_key "$digit" "Tab ${digit}" if-shell -F "$in_agent" \
+            "run-shell \"zsh ${(qq)DEV_SCRIPT} __switch ${digit} '#{client_name}' '#{session_id}'\"" \
+            "select-window -t :=${digit}"
+    done
 
     _dev_text_set -g @dev_key_conflicts "${(j:;:)_dev_key_conflicts}"
     tmux set-option -g @dev_bind_sig "$signature"
@@ -2626,14 +2651,14 @@ _dev_dashboard() {
             n="${action##* }"
             case "$action" in
                 select\ *)
-                    tmux display-message -p -t "=${grid_session}:${n}" '' &>/dev/null && selected="$n"
+                    _dev_tab_exists "$grid_session" "$n" && selected="$n"
                     ;;
                 go\ *)
                     tmux select-window -t "=${grid_session}:${n}" 2>/dev/null
                     return 0
                     ;;
                 agent\ *)
-                    _dev_dashboard_open_agent "$grid_session" "$n" "$client"
+                    _dev_open_tab_agent "$grid_session" "$n" "$client"
                     return 0
                     ;;
                 start\ *)
@@ -2649,7 +2674,7 @@ _dev_dashboard() {
 
 # Goes to a tab and opens its agent, as prefix a there would. The agent's
 # popup is opened just after this one closes: one popup cannot open another.
-_dev_dashboard_open_agent() {
+_dev_open_tab_agent() {
     local grid_session="$1" index="$2" client="$3" target_pane ws_id session
     tmux select-window -t "=${grid_session}:${index}" 2>/dev/null || return 1
     target_pane="$(tmux display-message -p -t "=${grid_session}:${index}" '#{pane_id}')"
@@ -2658,6 +2683,43 @@ _dev_dashboard_open_agent() {
     session="$(_dev_agent_session_of "$ws_id")" || return 1
     [[ -n "$client" ]] && tmux run-shell -b "sleep 0.3; tmux display-popup -c ${(qq)client} -w 90% -h 90% -b single -T ' ${ws_id} ' -E \"tmux attach-session -t '=${session}'\""
     return 0
+}
+
+# Read from the window list: `display-message -t =session:7` exits 0 even
+# when the session has no window 7.
+_dev_tab_exists() {
+    tmux list-windows -t "=$1:" -F '#{window_index}' 2>/dev/null | grep -qx -- "$2"
+}
+
+# prefix 1-9 inside an agent popup or the coordinator: close it and open tab
+# N's agent in the client that showed it. That client is not named anywhere,
+# so it is the parent session's client with the latest activity: the keys
+# typed into a popup arrive through it.
+_dev_switch_agent() {
+    local index="$1" inner="$2" popup_session="$3" parent parent_name ws_id outer
+    parent="$(tmux show-options -t "$popup_session" -qv @dev_parent)"
+    parent_name="$(tmux display-message -p -t "$parent" '#{session_name}' 2>/dev/null)"
+    if [[ -z "$parent" || -z "$parent_name" ]]; then
+        _dev_tell "$inner" "This popup's tabs are gone"
+        return 1
+    fi
+    if ! _dev_tab_exists "$parent_name" "$index"; then
+        _dev_tell "$inner" "No tab ${index}"
+        return 0
+    fi
+    ws_id="$(tmux show-options -w -t "=${parent_name}:${index}" -qv @dev_ws_id)"
+    if [[ -n "$ws_id" && "$(tmux show-options -w -t "$popup_session" -qv @dev_ws_id)" == "$ws_id" ]]; then
+        _dev_tell "$inner" "Already in this popup"
+        return 0
+    fi
+    outer="$(tmux list-clients -t "$parent" -F '#{client_activity} #{client_name}' | sort -rn | head -1)"
+    outer="${outer#* }"
+    if [[ -z "$outer" ]]; then
+        _dev_tell "$inner" "No client shows ${parent_name}"
+        return 1
+    fi
+    tmux detach-client -t "$inner"
+    _dev_open_tab_agent "$parent_name" "$index" "$outer"
 }
 
 # Run directly if executed (not sourced), set up keybindings if sourced

@@ -137,6 +137,42 @@ attached() {
     [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^ai-')" -eq 1 ]
 }
 
+@test "a digit pressed inside a tab's agent opens that tab's agent instead" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    local ws1 ws2
+    ws1="$(tmux show-options -w -t '=dev-myrepo-grid:1' -v @dev_ws_id)"
+    ws2="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws2}")" = 1 ]'
+    press "$PREFIX" 1
+    until_true '[ "$(attached "ai-${ws1}")" = 1 ]'
+    [ "$(attached "ai-${ws2}")" = 0 ]
+    [ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 1 ]
+    # And back again, from the agent it just opened.
+    press "$PREFIX" 2
+    until_true '[ "$(attached "ai-${ws2}")" = 1 ]'
+    [ "$(attached "ai-${ws1}")" = 0 ]
+}
+
+@test "a digit for a tab that does not exist leaves the agent open" {
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:1' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    press "$PREFIX" 7
+    until_true 'grep -aq "No tab 7" "$SCREEN"'
+    [ "$(attached "ai-${ws}")" = 1 ]
+}
+
+@test "a digit from the coordinator opens that tab's agent" {
+    press "$PREFIX" S
+    until_true '[ "$(attached coord-myrepo-grid)" = 1 ]'
+    press "$PREFIX" 2
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    [ "$(attached coord-myrepo-grid)" = 0 ]
+}
+
 @test "prefix X in a grid tab asks to remove that tab, and y removes it" {
     press "$PREFIX" 2
     until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'

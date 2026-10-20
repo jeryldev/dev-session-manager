@@ -256,6 +256,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
 | `prefix + S` | The grid's coordinator agent | one per grid |
 | `prefix + O` | Dashboard: every tab and its agent | 1-9 select, Enter go, a open agent, q close |
+| `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | hop from agent to agent without closing the popup first |
 
 All popups open at 90% x 90% with a single border.
 

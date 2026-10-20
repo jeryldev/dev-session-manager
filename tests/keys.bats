@@ -131,3 +131,26 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
     [[ "$(prefix_key h)" == *"cheatsheet.md"* ]]
     [[ "$(prefix_key T)" == *"my-manager.sh"* ]]
 }
+
+@test "prefix 1-9 go to a tab, or from inside an agent to that tab's agent" {
+    # Owner decision 2026-10-20: the digits follow context.
+    load_dev
+    local digit
+    for digit in 1 5 9; do
+        [[ "$(prefix_key "$digit")" == *"__switch ${digit} "*"select-window -t :=${digit}"* ]]
+    done
+}
+
+@test "a digit the user bound is left alone" {
+    tmux bind-key 3 display-message mine
+    load_dev
+    [[ "$(prefix_key 3)" == *"display-message mine"* ]]
+    [[ "$(prefix_key 4)" == *"__switch 4 "* ]]
+}
+
+@test "a dev key set to a digit keeps its action there" {
+    export DEV_KEY_AGENT=3
+    load_dev
+    [[ "$(prefix_key 3)" == *"__agent"* ]]
+    [[ "$(prefix_key 4)" == *"__switch 4 "* ]]
+}
