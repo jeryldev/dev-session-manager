@@ -575,12 +575,35 @@ _dev_sid_for() {
     print -r -- "${(L)sid}"
 }
 
+# Where `dev agent reset` keeps a workspace's conversation generation: one file
+# per conversation key, named by its hash, holding a number. No file is
+# generation 0, the id every version before reset derived.
+_dev_agent_generation_file() {
+    print -r -- "${XDG_STATE_HOME:-$HOME/.local/state}/dev-session-manager/agent-generations/$(_dev_sha1 "$1")"
+}
+
+_dev_agent_generation() {
+    local file="$(_dev_agent_generation_file "$1")" n=0
+    [[ -r "$file" ]] && n="$(<"$file")"
+    [[ "$n" == <-> ]] || n=0
+    print -r -- "$n"
+}
+
+# A workspace's conversation id: derived from its key, so /exit, a reboot and
+# a rebuilt grid all resume the same conversation, until a reset moves it on.
+_dev_agent_sid() {
+    local key="$1" n="$(_dev_agent_generation "$1")"
+    (( n )) && key+="#${n}"
+    _dev_sid_for "$key"
+}
+
 _dev_stamp_workspace() {
     local target="$1" wt_path="$2" repo="$3"
     local path_hash="$(_dev_sha1 "$wt_path")"
     _dev_text_set -w -t "$target" @dev_workspace "$wt_path"
     tmux set-option -w -t "$target" @dev_ws_id "$(_dev_slug "${wt_path:t}")-${path_hash[1,4]}"
-    tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_sid_for "dev-grid:${repo}:${wt_path}")"
+    _dev_text_set -w -t "$target" @dev_agent_key "dev-grid:${repo}:${wt_path}"
+    tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_agent_sid "dev-grid:${repo}:${wt_path}")"
 }
 
 _dev_grid_build() {
@@ -1224,9 +1247,13 @@ dev() {
             echo -e "  ${BLUE}dev clean${NC}          Remove popups whose session is gone"
             echo -e "  ${BLUE}dev${NC}                In a git repo: same as dev grid"
             echo -e "  ${BLUE}dev config list${NC}    Settings, and where each comes from"
-            echo -e "  ${BLUE}dev agent status${NC}   Each grid tab's agent: working, idle, waiting, dead"
+            echo -e "  ${BLUE}dev config set <k> <v>${NC}  Change a setting (also: get <k>, unset <k>, path)"
+            echo -e "  ${BLUE}dev agent status${NC}   Each grid tab's agent: working, idle, waiting, dead (--json)"
             echo -e "  ${BLUE}dev agent start <t>${NC} Start tab t's agent (the one prefix a opens)"
             echo -e "  ${BLUE}dev agent send <t>${NC}  Brief tab t's agent and confirm it arrived"
+            echo -e "  ${BLUE}dev agent watch${NC}    One line per agent change (--notify --json --for <s>)"
+            echo -e "  ${BLUE}dev agent reset <t>${NC} Tab t's next agent starts a new conversation (--force)"
+            echo -e "  ${BLUE}dev agent dashboard${NC} The prefix O dashboard, in this terminal"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
             echo -e "                     (--filter <text>  --limit <1-9>  --session <name>)"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
@@ -1419,6 +1446,7 @@ dev() {
             fi
             case "$2" in
                 start) shift 2; _dev_agent_start "$@" ;;
+                reset) shift 2; _dev_agent_reset "$@" ;;
                 send) shift 2; _dev_agent_send "$@" ;;
                 status) _dev_agent_status "$3" ;;
                 watch) shift 2; _dev_agent_watch "$@" ;;
@@ -1427,7 +1455,7 @@ dev() {
                     _dev_dashboard "$here" "$(tmux display-message -p '#{client_name}' 2>/dev/null)"
                     ;;
                 *)
-                    echo -e "${RED}Usage: dev agent start|send|status ...${NC}"
+                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|dashboard ...${NC}"
                     return 1
                     ;;
             esac
@@ -1563,11 +1591,16 @@ dev() {
             echo -e "  ${BLUE}Prefix (${NC}          Switch to previous session"
             echo -e "  ${BLUE}Prefix )${NC}          Switch to next session"
             echo ""
-            echo -e "${YELLOW}Dev popups:${NC}"
-            echo -e "  ${BLUE}Prefix a${NC}          AI assistant popup"
+            echo -e "${YELLOW}Dev popups and grid keys (default keys; dev help shows yours):${NC}"
+            echo -e "  ${BLUE}Prefix a${NC}          AI assistant popup (/exit stops it; prefix a resumes it)"
             echo -e "  ${BLUE}Prefix k${NC}          Kanban board popup"
             echo -e "  ${BLUE}Prefix g${NC}          Git UI popup"
             echo -e "  ${BLUE}Prefix j${NC}          Terminal popup"
+            echo -e "  ${BLUE}Prefix 1-9${NC}        Tab N; inside an agent popup, tab N's agent"
+            echo -e "  ${BLUE}Prefix N${NC}          New branch as a grid tab"
+            echo -e "  ${BLUE}Prefix X${NC}          Remove this tab's worktree (asks first)"
+            echo -e "  ${BLUE}Prefix S${NC}          The grid's coordinator agent"
+            echo -e "  ${BLUE}Prefix O${NC}          Dashboard: every tab and its agent"
             echo ""
             echo -e "${GREEN}Quick reference:${NC}"
             echo -e "  ${BLUE}Detach${NC} = Prefix d (session stays alive, can reattach)"
@@ -2186,6 +2219,50 @@ _dev_agent_start() {
     done
     echo -e "${GREEN}✓ Agent for tab ${index} started (${running})${NC}"
     [[ -z "$brief" ]] || _dev_agent_send "$index" --file "$brief"
+}
+
+# The tab's next agent starts a new conversation. The old one stays in the
+# agent's own history. A running agent is stopped only with --force: a reset
+# must never end work in progress by accident.
+_dev_agent_reset() {
+    local ws="" force=0
+    while (( $# )); do
+        case "$1" in
+            --force) force=1; shift ;;
+            -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            *) ws="$1"; shift ;;
+        esac
+    done
+    if [[ -z "$ws" ]]; then
+        echo -e "${RED}Usage: dev agent reset <tab|label|path> [--force]${NC}"
+        return 1
+    fi
+    local repo grid_session index
+    _dev_agent_grid || return 1
+    index="$(_dev_agent_resolve "$ws")" || return 1
+    local target="=${grid_session}:${index}"
+    local ws_id="$(tmux show-options -w -t "$target" -qv @dev_ws_id)"
+    local key="$(_dev_text_get -w -t "$target" @dev_agent_key)"
+    if [[ -z "$key" ]]; then
+        echo -e "${RED}Error: tab ${index} has no conversation to reset; reopen the grid with 'dev grid'${NC}"
+        return 1
+    fi
+    local running old="$(tmux show-options -w -t "$target" -qv @dev_agent_sid)"
+    if running="$(_dev_agent_session_of "$ws_id")"; then
+        if (( ! force )); then
+            echo -e "${RED}Error: the agent for tab ${index} is running; /exit it first, or pass --force to stop it${NC}"
+            return 1
+        fi
+        tmux kill-session -t "=${running}" 2>/dev/null
+    fi
+    local file="$(_dev_agent_generation_file "$key")"
+    mkdir -p "${file:h}" || return 1
+    print -r -- "$(( $(_dev_agent_generation "$key") + 1 ))" > "$file" || return 1
+    tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_agent_sid "$key")"
+    tmux set-option -w -t "$target" -u @dev_agent_started 2>/dev/null
+    echo -e "${GREEN}✓ Tab ${index}'s next agent starts a new conversation${NC}"
+    [[ -n "$old" ]] && echo -e "  The old one is kept: ${BLUE}claude --resume ${old}${NC}"
+    return 0
 }
 
 # Whether a message reached the agent: its first characters are on screen,

@@ -5,6 +5,8 @@ A lightweight zsh utility for quickly bootstrapping tmux development sessions wi
 ## Features
 
 - **Workspace grid**: `dev` inside a git repo opens one tab per worktree, so each branch gets its own window and its own AI popup
+- **Agents per tab**: each tab's AI agent resumes its conversation after `/exit` or a reboot; `prefix + 1`-`9` inside one hops to another tab's agent
+- **Coordinator and dashboard**: one agent per grid that briefs the others, and a live board of every tab's agent state
 - **Quick session creation**: `dev myproject` creates a 4-window tmux session
 - **Configurable windows**: editor, server, test, shell by default; set `DEV_WINDOWS` to change them
 - **Session management**: list, attach, and kill sessions easily
@@ -115,7 +117,19 @@ dev agent send 2 "run the tests"         # typed, submitted, and confirmed to ha
 dev agent send 2 --file brief.md         # long briefs go by file; one short line points at it
 dev agent watch --notify      # one line per change (working → waiting, idle, dead, unknown), a
                               # heartbeat every 30 min, and a last line when it stops; --json too
+dev agent reset 2             # tab 2's next agent starts a new conversation (--force if it is running)
+dev agent dashboard           # the prefix + O dashboard, in this terminal
 ```
+
+**Moving between agents.** Inside a tab's agent popup (or the coordinator), `prefix + 3` closes it and
+opens tab 3's agent, starting it if needed — one key from agent to agent. In a tab itself the digits
+select the tab, as tmux's own do.
+
+**Closing an agent.** `prefix + d` hides the popup; the agent keeps running. `/exit` stops it; the next
+`prefix + a` starts it again on the *same* conversation, because a tab's conversation id is derived
+from its worktree path (Claude only; see [AI tool customization](#ai-tool-customization)).
+`dev agent reset <tab>` gives the tab a new conversation; the old one stays in Claude's history, and
+reset prints the `claude --resume <id>` that reopens it.
 
 `watch` runs `watch_cmd` (or `DEV_WATCH_CMD`) at each heartbeat and passes its output through, so a
 repo can add its own checks — CI or review status, say.
@@ -157,8 +171,10 @@ database or ports, for example — export a command; `{branch}` is replaced (quo
 and the command's last line of output must be the new worktree's path:
 
 ```bash
-export DEV_WORKTREE_CREATE_CMD='bin/agent-grid slot create {branch}'
+export DEV_WORKTREE_CREATE_CMD='p="../$(basename "$PWD")-$(printf %s {branch} | tr / -)"; git worktree add -q -b {branch} "$p" >&2 && ./scripts/setup-worktree "$p" >&2 && echo "$p"'
 ```
+
+The command runs in the repo root; send everything but the path to stderr.
 
 If that command fails, no tab is added and dev does not fall back to `git worktree add`.
 
@@ -184,6 +200,9 @@ still reachable with `dev attach`.
 dev kill myproject
 ```
 
+`dev ls --all` also lists the popup sessions under each session, and `dev clean` removes popups whose
+session is gone (a tmux window closed by hand, for example, leaves its running popups behind).
+
 ### Show help with prerequisite status
 
 ```bash
@@ -199,7 +218,7 @@ Output shows checkmarks for installed prerequisites:
 
 Prerequisites:
   ✓ zsh (5.9)
-  ✓ tmux (3.4)
+  ✓ tmux (3.7c)
 
 Commands:
   dev <name>          Create or attach to a dev session
@@ -240,7 +259,7 @@ Versions before 2.4 created 7 windows (frontend, backend, database, testing, edi
 `export DEV_WINDOWS=frontend,backend,database,testing,editor,scratch,extra` brings that back, opening
 on frontend.
 
-## Popup windows (v2.1)
+## Popup windows
 
 Persistent popup windows for AI coding, kanban boards, git management, and a scratch terminal. Each tmux window gets its own popup session, so you can have separate contexts per window.
 
@@ -256,7 +275,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
 | `prefix + S` | The grid's coordinator agent | one per grid |
 | `prefix + O` | Dashboard: every tab and its agent | 1-9 select, Enter go, a open agent, q close |
-| `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | hop from agent to agent without closing the popup first |
+| `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | one key from agent to agent; a digit you bound yourself is left alone |
 
 All popups open at 90% x 90% with a single border.
 
@@ -284,7 +303,8 @@ Use `dev reload` to refresh keybindings after installing a new tool.
 
 In a grid, each tab's popups belong to its worktree: renaming the tab, `cd`-ing elsewhere, or pressing
 the key inside another popup all reach the same popup, and the AI popup resumes the same Claude
-conversation even after the tmux server restarts and the grid is rebuilt.
+conversation even after `/exit`, a tmux server restart and a rebuilt grid — until `dev agent reset`
+gives the tab a new one.
 
 Outside a grid, each tmux window gets its own persistent session. The session name is derived from your tmux session, window number, and window name:
 
@@ -299,7 +319,7 @@ Outside a grid, each tmux window gets its own persistent session. The session na
 ### Behavior
 
 - **Detach** (`prefix + d`): closes the popup. The session stays alive in the background. Pressing the keybinding again resumes exactly where you left off.
-- **Exit** (type `/exit` or `exit`): terminates the process. Since the tool is the only process in the session, the session is destroyed. The next keybinding press starts a fresh session.
+- **Exit** (type `/exit` or `exit`): terminates the process. Since the tool is the only process in the session, the session is destroyed. The next keybinding press starts a new session; in a grid tab the AI popup resumes the tab's Claude conversation in it (`dev agent reset` starts a new one).
 
 Changing directories with `cd` does not affect which session you get. The session is tied to the tmux window, not the filesystem path.
 
@@ -318,6 +338,12 @@ Supported tools:
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` |
 | [Aider](https://github.com/paul-gauthier/aider) | `aider` |
 
+Any terminal tool works as `ai_cmd` (one word; flags in `ai_args`), and through it any model that tool
+can reach. Three things are Claude-only today: resuming a tab's conversation (`--resume` with the tab's
+id; `agent_launch_cmd` can pass `{sid}` to another tool's own flag), the agent states in
+`dev agent status`, `watch` and the dashboard (read from Claude's screen; other tools show `unknown`),
+and the automatic `--enable-auto-mode`.
+
 ## Configuration
 
 The simplest way, the same for every install:
@@ -325,7 +351,9 @@ The simplest way, the same for every install:
 ```bash
 dev config set ai_cmd aider
 dev config list          # every setting, its value, and where it came from
+dev config get ai_cmd
 dev config unset ai_cmd
+dev config path          # the settings file
 ```
 
 Settings live in `~/.config/dev-session-manager/config` (`key = value` lines). An exported environment
@@ -338,7 +366,7 @@ variable overrides the file for as long as it is set.
 | `ai_cmd` | `DEV_AI_CMD` | `claude` | AI tool for `prefix + a` (one word) |
 | `ai_args` | `DEV_AI_ARGS` | `--enable-auto-mode` for claude, none otherwise | Flags for the AI tool |
 | `ssh_key` | `DEV_SSH_KEY` | unset | Key to `ssh-add` before the AI tool starts |
-| `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N` | Popup keys (after `prefix`) |
+| `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new`, `key_coordinator`, `key_overview`, `key_remove` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N`, `S`, `O`, `X` | Popup and grid keys (after `prefix`) |
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
 | `worktree_remove_cmd` | `DEV_WORKTREE_REMOVE_CMD` | unset | Remove `dev grid remove` worktrees with your own command; `{path}`, `{branch}`, `{force}` are filled in |
