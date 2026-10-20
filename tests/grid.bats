@@ -441,11 +441,9 @@ tty_wait_exit() {
     start_isolated_server
     zsh -c "source '$DEV_ZSH'" </dev/null
     local binding; binding="$(prefix_key N)"
-    [[ "$binding" == *"display-popup"* ]]
     # Full size, like the other popups: provisioning a worktree prints a lot.
-    # tmux lists the flags in its own order, quoted.
-    [[ "$binding" == *'-h "90%"'* && "$binding" == *'-w "90%"'* ]]
-    [[ "$binding" == *"#{pane_current_path}"* ]]
+    # The pane is passed so the prompt starts in its directory (e2e checks it).
+    [[ "$binding" == *"__dialog"*"#{pane_id}"*"90%"* ]]
     [[ "$binding" == *"$DEV_ZSH"*"grid add --prompt"* ]]
 }
 
@@ -1246,7 +1244,7 @@ answer_remove() {
     start_isolated_server
     zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
     local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "X"')"
-    [[ "$binding" == *"display-popup"* && "$binding" == *"grid remove --pane"* ]]
+    [[ "$binding" == *"__dialog"* && "$binding" == *"grid remove --pane"* ]]
 }
 
 @test "remove --pane acts on the tab that pane is in" {

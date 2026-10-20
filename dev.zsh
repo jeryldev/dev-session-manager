@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="3.2.1"
+DEV_VERSION="3.3.0"
 
 # This file, sourced or executed: key bindings run it again from tmux. Made
 # absolute but not resolved: Homebrew's bin/dev is a symlink into a versioned
@@ -1485,6 +1485,7 @@ dev() {
             ;;
 
         # What prefix 1-9 runs inside an agent popup or the coordinator.
+        __dialog) shift; _dev_dialog "$@" ;;
         __switch)
             _dev_switch_agent "$2" "$3" "$4" || true
             ;;
@@ -1612,7 +1613,7 @@ dev() {
             echo -e "  ${BLUE}Prefix N${NC}          New branch as a grid tab"
             echo -e "  ${BLUE}Prefix X${NC}          Remove this tab's worktree (asks first)"
             echo -e "  ${BLUE}Prefix S${NC}          The grid's coordinator agent"
-            echo -e "  ${BLUE}Prefix O${NC}          Dashboard: every tab and its agent"
+            echo -e "  ${BLUE}Prefix O${NC}          Dashboard: the grid as a tree of its agents"
             echo ""
             echo -e "${GREEN}Quick reference:${NC}"
             echo -e "  ${BLUE}Detach${NC} = Prefix d (session stays alive, can reattach)"
@@ -1935,7 +1936,7 @@ _dev_is_dev_binding() {
     [[ ( "$1" == *"display-popup -w 90% -h 90% -b single"* && "$1" == *'SESSION='* ) ||
        "$1" == *"grid add --prompt"* || "$1" == *"grid remove --pane"* ||
        "$1" == *" __coordinator "* || "$1" == *" __overview "* || "$1" == *" __dashboard "* ||
-       "$1" == *" __switch "* ]]
+       "$1" == *" __switch "* || "$1" == *" __dialog "* ]]
 }
 
 # tmux's own bindings that dev may replace, as tmux prints them: prefix 1-9
@@ -1987,7 +1988,7 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=6
+_DEV_BINDINGS_REV=7
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
@@ -2055,8 +2056,7 @@ _dev_setup_popup_keybindings() {
         fi
     fi
     [[ -n "${wanted[key_new]}" ]] && _dev_bind_key "${wanted[key_new]}" "New branch tab" \
-        display-popup -E -w 90% -h 90% -b single -T " New branch tab " \
-        -d "#{pane_current_path}" zsh "$DEV_SCRIPT" grid add --prompt
+        run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'New branch tab' 90% zsh ${(qq)DEV_SCRIPT} grid add --prompt"
     if [[ -n "${wanted[key_kb]}" ]] && _dev_has_command kb; then
         _dev_bind_popup "${wanted[key_kb]}" "Kanban board" kb kb
     fi
@@ -2065,9 +2065,9 @@ _dev_setup_popup_keybindings() {
     # Through run-shell: it expands #{pane_id} to the pane the key was pressed
     # in, which display-popup's own command arguments do not.
     [[ -n "${wanted[key_remove]}" ]] && _dev_bind_key "${wanted[key_remove]}" "Remove this tab" \
-        run-shell "tmux display-popup -E -w 90% -h 90% -b single -T ' Remove this tab ' \"zsh ${(qq)DEV_SCRIPT} grid remove --pane '#{pane_id}'\""
+        run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'Remove this tab' 90% zsh ${(qq)DEV_SCRIPT} grid remove --pane '#{pane_id}'"
     [[ -n "${wanted[key_overview]}" ]] && _dev_bind_key "${wanted[key_overview]}" "Dashboard" \
-        run-shell "tmux display-popup -E -w 95% -h 95% -b single -T ' dashboard ' \"zsh ${(qq)DEV_SCRIPT} __dashboard '#{pane_id}' '#{client_name}'\""
+        run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' dashboard 95% zsh ${(qq)DEV_SCRIPT} __dashboard '#{pane_id}' '#{client_name}'"
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then
         _dev_bind_popup "${wanted[key_git]}" "Git UI" lg lazygit
     fi
@@ -2646,68 +2646,69 @@ _dev_fit() {
     fi
 }
 
-# One frame of the dashboard: a header, a box per tab (wrapped to the width),
-# and the keys. Colour only on the state word, added after the text is cut,
-# so it never changes a line's width.
+# One frame of the dashboard: a header, the grid drawn as a tree (the
+# coordinator at the root, a branch per tab with its agent under it), and the
+# keys. Colour only on the state word, added after the text is cut, so it
+# never changes a line's width.
 _dev_dashboard_frame() {
     setopt localoptions
     local LC_ALL="$LC_ALL"
     _dev_utf8_locale
     local grid_session="$1" width="${2:-100}" selected="${3:-0}" us=$'\x1f'
     local -a rows=(${(f)"$(_dev_agent_rows)"})
-    local row index name workspace branch changes agent ctx detail running=0
+    local row index name workspace branch changes agent ctx detail running=0 name_w=0
     for row in "${rows[@]}"; do
         IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
         [[ "$agent" != (none|dead) ]] && (( running++ ))
+        (( ${#name} > name_w )) && name_w=${#name}
     done
+    (( name_w > width / 3 )) && name_w=$(( width / 3 ))
     local header="${grid_session} · $(_dev_plural ${#rows} tab) · $(_dev_plural $running "agent") running · $(date +%H:%M)"
     print -r -- "$(_dev_fit " $header" "$width")"
     print
 
-    local min_w=30 per_row box_w inner
-    per_row=$(( width / (min_w + 1) ))
-    (( per_row < 1 )) && per_row=1
-    box_w=$(( (width - (per_row - 1)) / per_row ))
-    inner=$(( box_w - 4 ))
-    local reset=$'\e[0m' bold=$'\e[1m'
+    local reset=$'\e[0m'
     local -A colour=(
         working $'\e[32m' waiting $'\e[1;33m' idle $'\e[37m'
         dead $'\e[31m' none $'\e[2m' unknown $'\e[35m'
     )
     local -A icon=(working ● waiting ● idle ◐ dead ✕ none ○ unknown '?')
 
-    local i k start line title state_text state_plain changes_text
-    local -a top l1 l2 l3 bottom
-    for (( start = 1; start <= ${#rows}; start += per_row )); do
-        top=() l1=() l2=() l3=() bottom=()
-        for (( k = start; k < start + per_row && k <= ${#rows}; k++ )); do
-            IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "${rows[k]}"
-            if [[ "$index" == "$selected" ]]; then
-                title=" ▶ ${index} ${name} "
-            else
-                title=" ${index} ${name} "
-            fi
-            # Cut, not padded: the rest of the top border is drawn with ─.
-            (( ${#title} > box_w - 3 )) && title="${title[1,box_w-4]}…"
-            top+=("┌─${title}${(l:$(( box_w - 3 - ${#title} ))::─:)}┐")
-            if [[ "$changes" == <-> ]]; then
-                (( changes )) && changes_text="${changes} changed" || changes_text="clean"
-            else
-                changes_text="$changes"
-            fi
-            l1+=("│ $(_dev_fit "${branch} · ${changes_text}" $inner) │")
-            case "$agent" in
-                none) state_plain="${icon[none]} no agent" ;;
-                *) state_plain="${icon[$agent]:-?} ${(U)agent}${ctx:+ · ctx ${ctx}%}" ;;
-            esac
-            state_text="$(_dev_fit "$state_plain" $inner)"
-            l2+=("│ ${colour[$agent]:-}${state_text}${reset} │")
-            l3+=("│ $(_dev_fit "${detail:+\"${detail}\"}" $inner) │")
-            bottom+=("└${(l:$(( box_w - 2 ))::─:)}┘")
-        done
-        for line in "${(j: :)top}" "${(j: :)l1}" "${(j: :)l2}" "${(j: :)l3}" "${(j: :)bottom}"; do
-            print -r -- "$line"
-        done
+    # The root: the grid's coordinator, if prefix S has started one.
+    local coord="coord-${grid_session#${DEV_SESSION_PREFIX}}" coord_state root="◇" root_text
+    if tmux has-session -t "=${coord}" 2>/dev/null; then
+        root="◆"
+        coord_state="$(tmux capture-pane -p -t "=${coord}:" 2>/dev/null | _dev_agent_screen_state)"
+        root_text="${icon[$coord_state]:-?} ${(U)coord_state}"
+    else
+        coord_state=none
+        root_text="${icon[none]} not started (prefix $(_dev_cfg key_coordinator))"
+    fi
+    local root_prefix=" ${root} coordinator · "
+    print -r -- "${root_prefix}${colour[$coord_state]:-}$(_dev_fit "$root_text" $(( width - ${#root_prefix} )))${reset}"
+    (( ${#rows} )) && print -r -- " │"
+
+    local k branch_mark stem changes_text state_plain
+    for (( k = 1; k <= ${#rows}; k++ )); do
+        IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "${rows[k]}"
+        if (( k == ${#rows} )); then
+            branch_mark="└─" stem="      "
+        else
+            branch_mark="├─" stem=" │    "
+        fi
+        [[ "$index" == "$selected" ]] && branch_mark+="▶" || branch_mark+=" "
+        if [[ "$changes" == <-> ]]; then
+            (( changes )) && changes_text="${changes} changed" || changes_text="clean"
+        else
+            changes_text="$changes"
+        fi
+        print -r -- " ${branch_mark}$(_dev_fit "${index} $(_dev_fit "$name" $name_w)  ${branch} · ${changes_text}" $(( width - 4 )))"
+        case "$agent" in
+            none) state_plain="${icon[none]} no agent" ;;
+            *) state_plain="${icon[$agent]:-?} ${(U)agent}${ctx:+ · ctx ${ctx}%}" ;;
+        esac
+        print -r -- "${stem}${colour[$agent]:-}$(_dev_fit "$state_plain" $(( width - 6 )))${reset}"
+        [[ -n "$detail" ]] && print -r -- "${stem}$(_dev_fit "\"${detail}\"" $(( width - 6 )))"
     done
     print
     print -r -- "$(_dev_fit " 1-9 select · Enter go to tab · a open its agent · s start its agent · q close" "$width")"
@@ -2773,6 +2774,23 @@ _dev_dashboard() {
     } always {
         print -n $'\e[?25h'
     }
+}
+
+# A popup for a command rather than a session: the dashboard and the N and X
+# prompts. A command popup has no client of its own for prefix d to detach,
+# so the command runs in a throwaway session that the popup attaches: prefix
+# d detaches it and the hook ends the session, command and all. Ctrl-C ends
+# the command, which ends the session too.
+_dev_dialog() {
+    local client="$1" pane="$2" title="$3" size="$4"
+    shift 4
+    local name="dlg-$$" dir
+    dir="$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)"
+    tmux new-session -d -s "$name" -c "${dir:-$HOME}" "$@" || return 1
+    tmux set-option -t "=${name}:" status off
+    tmux set-hook -t "=${name}:" client-detached "kill-session -t '=${name}'"
+    tmux display-popup -c "$client" -w "$size" -h "$size" -b single -T " ${title} " \
+        -E "tmux attach-session -t '=${name}'" || tmux kill-session -t "=${name}" 2>/dev/null
 }
 
 # Goes to a tab and opens its agent, as prefix a there would. The agent's

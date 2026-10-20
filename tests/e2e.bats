@@ -98,6 +98,36 @@ attached() {
     until_true '[ "$(attached "ai-${ws}")" = 1 ]'
 }
 
+@test "in the dashboard, s starts the selected tab's agent" {
+    press "$PREFIX" O
+    until_true 'grep -aq "q close" "$SCREEN"'
+    press 2
+    until_true 'grep -aq "▶2 myrepo-feat" "$SCREEN"'
+    press s
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    until_true 'tmux has-session -t "=ai-${ws}-claude" 2>/dev/null'
+}
+
+@test "in the dashboard, q closes it" {
+    local client; client="$(tmux list-clients -F '#{client_name}')"
+    press "$PREFIX" O
+    until_true 'grep -aq "q close" "$SCREEN"'
+    pgrep -f "__dashboard .*${client}" >/dev/null
+    press q
+    until_true '! pgrep -f "__dashboard .*${client}" >/dev/null'
+}
+
+@test "in the dashboard, a digit for a missing tab keeps the selection" {
+    press "$PREFIX" O
+    until_true 'grep -aq "q close" "$SCREEN"'
+    press 2
+    until_true 'grep -aq "▶2 myrepo-feat" "$SCREEN"'
+    # Selecting tab 7 would make Enter go nowhere and leave tab 1 showing.
+    press 7
+    press $'\r'
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+}
+
 @test "prefix N asks for a branch and opens it as the next tab" {
     press "$PREFIX" N
     until_true 'grep -aq "Branch for the new tab" "$SCREEN"'
@@ -182,4 +212,100 @@ attached() {
     press y $'\r'
     until_true '[ ! -d "$CODE/myrepo-feat" ]'
     until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
+}
+
+@test "a digit inside the agent of that same tab stays in it" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    press "$PREFIX" 2
+    until_true 'grep -aq "Already in this popup" "$SCREEN"'
+    [ "$(attached "ai-${ws}")" = 1 ]
+}
+
+@test "an agent opened with prefix a and then gone is dead, not none" {
+    # The popup marks the tab itself; no dev agent start was involved.
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:1' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    # Attached is not yet launched: wait until the popup's agent runner has
+    # recorded its pane, which it does just after marking the tab.
+    until_true '[ -n "$(tmux show-options -t "=ai-${ws}-claude:" -qv @dev_agent_pane)" ]'
+    tmux kill-session -t "=ai-${ws}-claude"
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent status' _ "$REPO" "$DEV_ZSH" </dev/null
+    [[ "$output" =~ 1\ +myrepo\ +main\ +clean\ +dead ]]
+}
+
+# The dashboard and the N and X prompts run a command, not a session, so
+# tmux's prefix d had nothing to detach and they could only be left with q.
+# Each must close with prefix d and with Ctrl-C, end its command, leave no
+# session behind, and keep the grid's own client attached.
+others() { tmux list-sessions -F '#{session_name}' | grep -v '^dev-myrepo-grid$'; }
+
+# The command runs in its own session (the popup's), so checking that session
+# and the command in its pane stays inside this test's tmux server.
+dialog_closes() {
+    local key="$1" shown="$2" command="$3" close="$4"
+    press "$PREFIX" "$key"
+    until_true "grep -aq '$shown' \"\$SCREEN\""
+    until_true '[ "$(others | wc -l | tr -d " ")" = 1 ]'
+    local pid; pid="$(tmux list-panes -t "=$(others):" -F '#{pane_pid}')"
+    ps -o args= -p "$pid" | grep -q -- "$command"
+    press "$close"
+    until_true '[ -z "$(others)" ]'
+    until_true '! kill -0 "$pid" 2>/dev/null'
+    [ "$(attached dev-myrepo-grid)" = 1 ]
+}
+
+@test "prefix d closes the dashboard" {
+    dialog_closes O "q close" "__dashboard" "${PREFIX}d"
+}
+
+@test "Ctrl-C closes the dashboard" {
+    dialog_closes O "q close" "__dashboard" $'\x03'
+}
+
+@test "prefix d closes the new branch tab prompt" {
+    dialog_closes N "Branch" "grid add --prompt" "${PREFIX}d"
+}
+
+@test "Ctrl-C closes the new branch tab prompt" {
+    dialog_closes N "Branch" "grid add --prompt" $'\x03'
+}
+
+@test "prefix d closes the remove tab prompt" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    dialog_closes X "Remove tab 2" "grid remove --pane" "${PREFIX}d"
+    [ -d "$CODE/myrepo-feat" ]
+}
+
+@test "Ctrl-C closes the remove tab prompt" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    dialog_closes X "Remove tab 2" "grid remove --pane" $'\x03'
+    [ -d "$CODE/myrepo-feat" ]
+}
+
+
+@test "prefix d closes the terminal and coordinator popups, which keep running" {
+    press "$PREFIX" j
+    until_true '[ "$(attached term-)" = 1 ]'
+    press "$PREFIX" d
+    until_true '[ "$(attached term-)" = 0 ]'
+    press "$PREFIX" S
+    until_true '[ "$(attached coord-)" = 1 ]'
+    press "$PREFIX" d
+    until_true '[ "$(attached coord-)" = 0 ]'
+    [ "$(attached dev-myrepo-grid)" = 1 ]
+}
+
+@test "prefix N's prompt starts in the directory of the tab it was pressed in" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    press "$PREFIX" N
+    until_true '[ "$(others | wc -l | tr -d " ")" = 1 ]'
+    [ "$(tmux display-message -p -t "=$(others):" '#{pane_current_path}')" = "$(cd "$CODE/myrepo-feat" && pwd -P)" ]
 }

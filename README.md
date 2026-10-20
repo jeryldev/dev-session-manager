@@ -6,7 +6,7 @@ A lightweight zsh utility for quickly bootstrapping tmux development sessions wi
 
 - **Workspace grid**: `dev` inside a git repo opens one tab per worktree, so each branch gets its own window and its own AI popup
 - **Agents per tab**: each tab's AI agent resumes its conversation after `/exit` or a reboot; `prefix + 1`-`9` inside one hops to another tab's agent
-- **Coordinator and dashboard**: one agent per grid that briefs the others, and a live board of every tab's agent state
+- **Coordinator and dashboard**: one agent per grid that briefs the others, and a live tree of every tab's agent state
 - **Quick session creation**: `dev myproject` creates a 4-window tmux session
 - **Configurable windows**: editor, server, test, shell by default; set `DEV_WINDOWS` to change them
 - **Session management**: list, attach, and kill sessions easily
@@ -136,10 +136,25 @@ repo can add its own checks — CI or review status, say.
 
 `prefix + S` opens the grid's **coordinator**: one agent per grid, started in the repo root, whose job
 is to brief and check on the tab agents with `dev agent ...` (it finds its grid through `DEV_GRID`).
-`prefix + O` opens the **dashboard**: a box for every tab, with its branch, uncommitted changes, and
-its agent's state (working, idle, **waiting** with the question, dead, or none), refreshed every two
-seconds. Press a tab's number to select it, Enter to go to it, `a` to open its agent, `s` to start
-one, `q` to close. It never types into an agent.
+`prefix + O` opens the **dashboard**: the grid drawn as a tree, with the coordinator at the root and
+a branch for every tab showing its branch, uncommitted changes, and its agent's state (working, idle,
+**waiting** with the question, dead, or none), refreshed every two seconds. Press a tab's number to
+select it, Enter to go to it, `a` to open its agent, `s` to start one, `q`, `prefix + d` or Ctrl-C
+to close. It never types into an agent.
+
+```
+ dev-myrepo-grid · 3 tabs · 2 agents running · 14:05
+
+ ◆ coordinator · ● WORKING
+ │
+ ├─ 1 myrepo        main · clean
+ │    ○ no agent
+ ├─▶2 myrepo-feat   feat · 3 changed
+ │    ● WAITING · ctx 42%
+ │    "Allow edit to dev.zsh?"
+ └─ 3 myrepo-keep   keep · clean
+      ◐ IDLE
+```
 
 ### Choosing the workspaces
 
@@ -274,7 +289,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
 | `prefix + S` | The grid's coordinator agent | one per grid |
-| `prefix + O` | Dashboard: every tab and its agent | 1-9 select, Enter go, a open agent, q close |
+| `prefix + O` | Dashboard: the grid as a tree of its agents | 1-9 select, Enter go, a open agent, q close |
 | `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | one key from agent to agent; a digit you bound yourself is left alone |
 
 All popups open at 90% x 90% with a single border.
@@ -299,7 +314,9 @@ Use `dev reload` to refresh keybindings after installing a new tool.
 ### Usage
 
 - **Open**: `prefix + a/k/g/j` opens the popup
-- **Close**: `prefix + d` (detach) closes the popup, session stays alive
+- **Close**: `prefix + d` (detach) closes the popup, session stays alive. It closes every dev popup,
+  the dashboard and the `prefix + N`/`X` prompts included; those three also close with Ctrl-C (in
+  the other popups Ctrl-C belongs to the program, e.g. it interrupts Claude)
 - **Reopen**: same keybinding resumes exactly where you left off
 - **Which board kb opens**: popups start in the window's folder (a grid tab's worktree), so kb
   opens the board named after that folder or its git repository, worktrees included (kb 0.4+)
