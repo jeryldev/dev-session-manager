@@ -599,9 +599,12 @@ _dev_agent_sid() {
 }
 
 _dev_stamp_workspace() {
-    local target="$1" wt_path="$2" repo="$3"
+    local target="$1" wt_path="$2" repo="$3" label="$4"
     local path_hash="$(_dev_sha1 "$wt_path")"
     _dev_text_set -w -t "$target" @dev_workspace "$wt_path"
+    # Kept apart from the window name, which tmux reports escaped, and
+    # differently by version (3.8 doubles a backslash, 3.4 does not).
+    [[ -n "$label" ]] && _dev_text_set -w -t "$target" @dev_label "$label"
     tmux set-option -w -t "$target" @dev_ws_id "$(_dev_slug "${wt_path:t}")-${path_hash[1,4]}"
     _dev_text_set -w -t "$target" @dev_agent_key "dev-grid:${repo}:${wt_path}"
     tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_agent_sid "dev-grid:${repo}:${wt_path}")"
@@ -710,11 +713,11 @@ _dev_grid_build() {
     _dev_text_set -t "=${session_name}:" @dev_grid "$repo"
     [[ -n "$filter" ]] && _dev_text_set -t "=${session_name}:" @dev_grid_filter "$filter"
     [[ -n "$limit" ]] && tmux set-option -t "=${session_name}:" @dev_grid_limit "$limit"
-    _dev_stamp_workspace "=${session_name}:1" "${paths[1]}" "$repo"
+    _dev_stamp_workspace "=${session_name}:1" "${paths[1]}" "$repo" "${labels[1]}"
     local i
     for (( i = 2; i <= ${#paths}; i++ )); do
         tmux new-window -t "=${session_name}:${i}" -n "$(_dev_tmux_literal "${labels[i]}")" -c "$(_dev_tmux_literal "${paths[i]}")"
-        _dev_stamp_workspace "=${session_name}:${i}" "${paths[i]}" "$repo"
+        _dev_stamp_workspace "=${session_name}:${i}" "${paths[i]}" "$repo" "${labels[i]}"
     done
     tmux select-window -t "=${session_name}:1"
     _dev_attach_session "$session_name" "Created $(_dev_plural ${#paths} tab), one per worktree"
@@ -726,19 +729,18 @@ _dev_grid_build() {
 # and a printable separator can appear in a path or a name. So tmux is asked
 # only for ids, numbers and the name — last, where any character is safe — and
 # each option is read on its own.
-# tmux reports a window name escaped: a backslash doubled, a control
-# character as \ooo or \n. Undone here, or a label "a\b" reads "a\\b".
-_dev_tmux_unvis() {
-    # print without -r reads the escapes tmux writes; a backslash that was
-    # the user's own arrives doubled, so it survives as one.
-    print -n -- "$1"
+# A tab's label as dev gave it, or its window name for a window dev did not
+# label (made by an older dev, or by hand).
+_dev_window_label() {
+    local label="$(_dev_text_get -w -t "$1" @dev_label)"
+    print -r -- "${label:-$2}"
 }
 
 _dev_window_table() {
     local window_id index name us=$'\x1f'
     tmux list-windows -t "=${1}:" -F '#{window_id}|#{window_index}|#{window_name}' 2>/dev/null |
         while IFS='|' read -r window_id index name; do
-            print -r -- "${window_id}${us}${index}${us}$(_dev_text_get -w -t "$window_id" @dev_workspace)${us}$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)${us}$(tmux show-options -w -t "$window_id" -qv @dev_agent_started)${us}$(_dev_tmux_unvis "$name")"
+            print -r -- "${window_id}${us}${index}${us}$(_dev_text_get -w -t "$window_id" @dev_workspace)${us}$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)${us}$(tmux show-options -w -t "$window_id" -qv @dev_agent_started)${us}$(_dev_window_label "$window_id" "$name")"
         done
 }
 
@@ -938,7 +940,7 @@ _dev_grid_free_indexes() {
 _dev_grid_open_tab() {
     local grid_session="$1" index="$2" wt_path="$3" repo="$4" label="${5:-${3:t}}"
     tmux new-window -d -t "=${grid_session}:${index}" -n "$(_dev_tmux_literal "$label")" -c "$(_dev_tmux_literal "$wt_path")"
-    _dev_stamp_workspace "=${grid_session}:${index}" "$wt_path" "$repo"
+    _dev_stamp_workspace "=${grid_session}:${index}" "$wt_path" "$repo" "$label"
 }
 
 # Worktrees with no tab (into `added`) and tabs whose directory is gone (into
@@ -1097,7 +1099,7 @@ _dev_grid_remove() {
     local window_id="$(tmux display-message -p -t "=${grid_session}:${index}" '#{window_id}')"
     local workspace="$(_dev_text_get -w -t "$window_id" @dev_workspace)"
     local ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
-    local label="$(_dev_tmux_unvis "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
+    local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
     if [[ -z "$workspace" ]]; then
         echo -e "${RED}Error: tab ${index} is not a workspace${NC}"
         return 1

@@ -441,15 +441,14 @@ swallowing_agent() {
     [ "$(cat "$file")" = "$(printf 'first line\nsecond line')" ]
 }
 
-@test "status --json escapes quotes, backslashes and tabs" {
-    # A label cannot carry these (tmux refuses a tab in a window name), so
-    # they ride in a waiting agent's question, and a quote in the path.
+@test "status --json escapes quotes and backslashes" {
+    # They ride in a waiting agent's question, and a quote in the path.
     local repo; repo="$(make_repo)"
     local odd="$CODE/we\"ird/myrepo-a"
     mkdir -p "${odd%/*}"
     git -C "$repo" worktree add -q -b a "$odd"
     run_grid "$repo"
-    export DEV_AGENT_LAUNCH_CMD="printf 'Allow \"C:\\\\tmp\"\\tnow?\\nEnter to confirm\\n'; exec sleep 600"
+    export DEV_AGENT_LAUNCH_CMD="printf 'Allow \"C:\\\\tmp\" now?\\nEnter to confirm\\n'; exec sleep 600"
     agent_cmd "$repo" start 2
     agent_cmd "$repo" status --json
     [ "$status" -eq 0 ]
@@ -457,7 +456,16 @@ swallowing_agent() {
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert rows[1]["path"] == sys.argv[1], (rows[1]["path"], sys.argv[1])
-assert rows[1]["detail"] == "Allow \"C:\\tmp\"\tnow?", rows[1]["detail"]' "$odd"
+assert rows[1]["detail"] == "Allow \"C:\\tmp\" now?", rows[1]["detail"]' "$odd"
+}
+
+@test "the JSON encoder escapes tabs and drops other control characters" {
+    # Not through a screen: tmux versions differ in how a tab is captured.
+    run zsh -c 'source "$1" 2>/dev/null; _dev_json_str "$(printf "a\tb\001c\\\\d\"e")"' _ "$DEV_ZSH" </dev/null
+    [ "$status" -eq 0 ]
+    printf '%s' "$output" | python3 -c '
+import json, sys
+assert json.loads(sys.stdin.read()) == "a\tbc\\d\"e"'
 }
 
 @test "a .dev-grid label keeps its backslashes" {
