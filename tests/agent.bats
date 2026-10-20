@@ -141,7 +141,7 @@ exec sleep 600
     export DEV_AGENT_LAUNCH_CMD="exit 3"
     agent_cmd "$REPO" start 2
     [ "$status" -ne 0 ]
-    [[ "$output" == *"exited"* ]]
+    [[ "$output" == *"exited as soon as it started (status 3)"* ]]
     [ -z "$(agent_sessions)" ]
 }
 
@@ -164,7 +164,13 @@ exec sleep 600
     fake_agent_showing claude-2.1.286-waiting-trust.txt
     agent_cmd "$REPO" start 2
     agent_cmd "$REPO" status
-    [[ "$output" == *"waiting"* ]]
+    [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +waiting\ +Quick\ safety\ check ]]
+    agent_cmd "$REPO" status --json
+    printf '%s\n' "$output" | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert rows[1]["agent"] == "waiting", rows[1]
+assert rows[1]["detail"].startswith("Quick safety check"), rows[1]'
 }
 
 @test "an agent that died is dead, not idle and not none" {
@@ -185,14 +191,14 @@ exec sleep 600
     agent_cmd "$REPO" status --json
     [ "$status" -eq 0 ]
     [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 2 ]
+    # Checked raw: json.dumps of the parsed rows would escape an ESC away.
+    [[ "$output" != *$'\033'* ]]
     printf '%s\n' "$output" | python3 -c '
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert [r["tab"] for r in rows] == [1, 2], rows
 assert set(rows[0]) == {"tab", "label", "path", "branch", "dirty", "agent", "detail", "ctx"}, rows[0]
-assert rows[1]["agent"] == "idle" and rows[1]["ctx"] == 7, rows[1]
-assert "\033" not in json.dumps(rows)
-'
+assert rows[1]["agent"] == "idle" and rows[1]["ctx"] == 7, rows[1]'
 }
 
 @test "status outside a grid is an error" {
@@ -264,6 +270,7 @@ swallowing_agent() {
     local session; session="$(agent_sessions | cut -d'|' -f1)"
     local typed; typed="$(tmux capture-pane -p -J -t "=${session}:" | grep -m1 '^❯ Read')"
     local file; file="${typed#*instructions in }"
+    [[ "$file" == "$XDG_STATE_HOME/dev-session-manager/briefs/"* ]]
     [ "$(cat "$file")" = "$long" ]
 }
 
@@ -331,6 +338,7 @@ swallowing_agent() {
     [ "$status" -eq 0 ]
     agent_cmd "$REPO" send 2 --timeout 1 --file "$BATS_TEST_TMPDIR/two.md"
     [ "$status" -ne 0 ]
+    [[ "$output" == *"Not confirmed"* ]]
 }
 
 @test "start --brief with a brief it cannot read fails before starting anything" {
@@ -338,6 +346,7 @@ swallowing_agent() {
     echoing_agent
     agent_cmd "$REPO" start 2 --brief "$BATS_TEST_TMPDIR/nope.md"
     [ "$status" -ne 0 ]
+    [[ "$output" == *"cannot read the brief"* ]]
     [ -z "$(agent_sessions)" ]
 }
 
@@ -345,8 +354,11 @@ swallowing_agent() {
     grid_with_feat
     swallowing_agent
     printf 'x\n' > "$BATS_TEST_TMPDIR/b.md"
-    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev agent start 2 --brief "$3"' _ "$REPO" "$DEV_ZSH" "$BATS_TEST_TMPDIR/b.md" </dev/null
+    agent_cmd "$REPO" start 2 --brief "$BATS_TEST_TMPDIR/b.md"
     [ "$status" -ne 0 ]
+    [[ "$output" == *"Not confirmed"* ]]
+    # The agent started; only the brief failed, so it is left running.
+    [ -n "$(agent_sessions)" ]
 }
 
 @test "send types into the agent's pane, even after the session was split" {
@@ -360,12 +372,29 @@ swallowing_agent() {
     [[ "$(tmux capture-pane -p -t "=${session}:.0")" == *"❯ hello agent"* ]]
 }
 
-@test "an agent whose launch fails leaves its error on screen and start reports it" {
+@test "the agent popup keeps a failed launch's error on screen" {
+    # A popup closes when its command ends; the error must not flash and vanish.
     grid_with_feat
-    export DEV_AGENT_LAUNCH_CMD="echo cannot authenticate; exit 3"
-    agent_cmd "$REPO" start 2
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"exited"* ]]
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    tmux new-session -d -s popup -e "DEV_AGENT_LAUNCH_CMD=echo cannot authenticate; exit 3" "zsh '$DEV_ZSH' __agent '$pane'"
+    local i screen=""
+    for i in $(seq 1 50); do
+        screen="$(tmux capture-pane -p -t '=popup:' 2>/dev/null)"
+        [[ "$screen" == *"Press Enter to close"* ]] && break
+        sleep 0.2
+    done
+    [[ "$screen" == *"cannot authenticate"* ]]
+    [[ "$screen" == *"the agent exited with status 3. Press Enter to close."* ]]
+    [ "$(tmux show-options -t '=popup:' -qv @dev_agent_exit)" = 3 ]
+    # Still there a moment later, and gone once Enter is pressed: it waits.
+    sleep 1
+    tmux has-session -t '=popup'
+    tmux send-keys -t '=popup:' Enter
+    for i in $(seq 1 50); do
+        tmux has-session -t '=popup' 2>/dev/null || return 0
+        sleep 0.2
+    done
+    return 1
 }
 
 @test "a waiting question is reported without its indent" {
@@ -383,4 +412,62 @@ swallowing_agent() {
     [ "$status" -eq 0 ]
     agent_cmd "$REPO" send 2 --timeout 1 --file "$BATS_TEST_TMPDIR/one.md"
     [ "$status" -ne 0 ]
+    [[ "$output" == *"Not confirmed"* ]]
+}
+
+@test "start --brief on a running agent delivers the brief to it" {
+    grid_with_feat
+    echoing_agent
+    agent_cmd "$REPO" start 2
+    printf 'the brief\n' > "$BATS_TEST_TMPDIR/brief.md"
+    agent_cmd "$REPO" start 2 --brief "$BATS_TEST_TMPDIR/brief.md"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already running"* ]]
+    [[ "$output" == *"Delivered to tab 2"* ]]
+    [ "$(agent_sessions | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "a short multi-line message goes to a file too" {
+    # A newline typed into the agent's input would submit the first line alone.
+    grid_with_feat
+    echoing_agent
+    agent_cmd "$REPO" start 2
+    agent_cmd "$REPO" send 2 "$(printf 'first line\nsecond line')"
+    [ "$status" -eq 0 ]
+    local session; session="$(agent_sessions | cut -d'|' -f1)"
+    local typed; typed="$(tmux capture-pane -p -J -t "=${session}:" | grep -m1 '^❯ Read')"
+    [[ "$typed" == "❯ Read and follow the instructions in "* ]]
+    local file; file="${typed#*instructions in }"
+    [ "$(cat "$file")" = "$(printf 'first line\nsecond line')" ]
+}
+
+@test "status --json escapes quotes, backslashes and tabs" {
+    # A label cannot carry these (tmux refuses a tab in a window name), so
+    # they ride in a waiting agent's question, and a quote in the path.
+    local repo; repo="$(make_repo)"
+    local odd="$CODE/we\"ird/myrepo-a"
+    mkdir -p "${odd%/*}"
+    git -C "$repo" worktree add -q -b a "$odd"
+    run_grid "$repo"
+    export DEV_AGENT_LAUNCH_CMD="printf 'Allow \"C:\\\\tmp\"\\tnow?\\nEnter to confirm\\n'; exec sleep 600"
+    agent_cmd "$repo" start 2
+    agent_cmd "$repo" status --json
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert rows[1]["path"] == sys.argv[1], (rows[1]["path"], sys.argv[1])
+assert rows[1]["detail"] == "Allow \"C:\\tmp\"\tnow?", rows[1]["detail"]' "$odd"
+}
+
+@test "a .dev-grid label keeps its backslashes" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    printf '%s\t%s\n' "$CODE/myrepo-a" 'api\now' > "$repo/.dev-grid"
+    run_grid "$repo"
+    agent_cmd "$repo" status --json
+    printf '%s\n' "$output" | python3 -c '
+import json, sys
+rows = [json.loads(l) for l in sys.stdin]
+assert [r["label"] for r in rows] == ["api\\now"], rows'
 }

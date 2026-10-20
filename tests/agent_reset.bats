@@ -93,3 +93,18 @@ running() {
     done
     return 1
 }
+
+@test "reset says how to go back to the old conversation" {
+    local old; old="$(sid 2)"
+    agent_cmd reset 2
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"claude --resume ${old}"* ]]
+}
+
+@test "a tab whose agent was stopped by reset has no agent, not a dead one" {
+    agent_cmd start 2
+    agent_cmd reset 2 --force
+    [ "$status" -eq 0 ]
+    agent_cmd status
+    [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +none ]]
+}

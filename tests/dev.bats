@@ -39,6 +39,17 @@ run_dev() {
     run zsh -c "source '$DEV_ZSH' 2>/dev/null; dev $*" </dev/null
 }
 
+# A PATH with only the tools dev needs, plus any named, so a test can take
+# tmux, kb or lazygit away whatever this machine has installed.
+path_with() {
+    local dir="$BATS_TEST_TMPDIR/base-path" tool found
+    mkdir -p "$dir"
+    for tool in zsh sh awk sed grep tr cksum cat mkdir mv rm sort od head tail cut wc env "$@"; do
+        found="$(type -P "$tool")" && ln -sf "$found" "$dir/$tool"
+    done
+    printf '%s' "$dir"
+}
+
 # ─── Test isolation (guards the suite itself) ───
 
 @test "the suite runs against an isolated tmux server, not the developer's" {
@@ -133,6 +144,18 @@ assert_default_windows() {
     create_dev_session startwin
     run tmux display-message -p -t '=dev-startwin:' '#{window_name}'
     [ "$output" = "editor" ]
+}
+
+@test "every window of a new session starts in home_dir" {
+    export DEV_HOME_DIR="$BATS_TEST_TMPDIR/projects"
+    mkdir -p "$DEV_HOME_DIR"
+    create_dev_session homed
+    local want; want="$(cd "$DEV_HOME_DIR" && pwd -P)"
+    run tmux list-panes -s -t '=dev-homed:' -F '#{pane_current_path}'
+    [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 4 ]
+    local path; while IFS= read -r path; do
+        [ "$(cd "$path" && pwd -P)" = "$want" ]
+    done <<< "$output"
 }
 
 @test "DEV_WINDOWS replaces the windows, and the session opens on the first" {
@@ -250,6 +273,32 @@ install_hooks() {
     [ "$(session_names)" = "keep" ]
 }
 
+@test "dev kill of a session without popups says only that it killed it" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    run_dev kill proj
+    [ "$status" -eq 0 ]
+    [ "$output" = "✓ Killed session: proj" ]
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev kill counts a single popup in the singular" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    open_popup dev-proj term "sleep 300"
+    run_dev kill proj
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"(and 1 popup)"* ]]
+}
+
+@test "dev k is an alias for kill" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    run_dev k proj
+    [ "$status" -eq 0 ]
+    [ "$(session_names)" = "keep" ]
+}
+
 @test "dev kill reaps the popups of a session that was renamed" {
     # US-8.9: prefix $ renames the parent; a name stamp would strand them.
     start_isolated_server keep
@@ -267,8 +316,10 @@ install_hooks() {
     start_isolated_server keep
     tmux new-session -d -s dev-proj
     tmux new-session -d -s 'ai-v1.2-x' "sleep 300"
-    tmux set-option -t '$2' @dev_parent "$(session_id_of dev-proj)"
-    ! tmux has-session -t 'ai-v1.2-x' 2>/dev/null
+    local popup; popup="$(tmux list-sessions -F '#{session_id} #{session_name}' | awk '$2 == "ai-v1.2-x" {print $1}')"
+    tmux set-option -t "$popup" @dev_parent "$(session_id_of dev-proj)"
+    run tmux has-session -t 'ai-v1.2-x'
+    [ "$status" -ne 0 ]
     run_dev kill proj
     [ "$status" -eq 0 ]
     [ "$(session_names)" = "keep" ]
@@ -334,7 +385,7 @@ install_hooks() {
     [ "$status" -eq 0 ]
     local after; after="${output#*renamed}"
     [[ "$after" == *"term-dev-proj"* ]]
-    [[ "$output" != *"orphan"* ]]
+    [[ "$output" != *"rphan"* ]]
 }
 
 @test "dev ls --all marks a popup whose parent is gone" {
@@ -395,11 +446,37 @@ install_hooks() {
     # US-9.5 / D19: only the name says they are ours, and a name is not proof.
     start_isolated_server keep
     tmux new-session -d -s ai-dev-old-1-editor-claude "sleep 300"
+    local id; id="$(session_id_of '=ai-dev-old-1-editor-claude:')"
     run_dev clean
     [ "$status" -eq 0 ]
     [[ "$output" == *"ai-dev-old-1-editor-claude"* ]]
-    [[ "$output" == *"kill-session -t '\$1'"* ]]
+    [[ "$output" == *"kill-session -t '${id}'"* ]]
     tmux has-session -t ai-dev-old-1-editor-claude
+}
+
+# An orphan (its parent id is gone) with a popup of its own opened inside it.
+orphan_with_child() {
+    start_isolated_server keep
+    tmux new-session -d -s ai-gone "sleep 300"
+    tmux set-option -t ai-gone @dev_parent '$999'
+    open_popup ai-gone term "sleep 300"
+    [ "$(session_names | grep -c '^term-')" -eq 1 ]
+}
+
+@test "dev clean removes an orphan's own popups with it" {
+    orphan_with_child
+    run_dev clean
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Removed 2 orphaned popups"* ]]
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev clean --dry-run counts an orphan's own popups in its header" {
+    orphan_with_child
+    run_dev clean --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Would remove 2 orphaned popups"* ]]
+    [ "$(session_names | wc -l | tr -d ' ')" -eq 3 ]
 }
 
 # ─── B7: attaching from inside tmux (US-2) ───
@@ -436,6 +513,60 @@ SH
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach dev-other" </dev/null
     [ "$status" -eq 0 ]
     [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t =dev-other" ]
+}
+
+@test "dev a is an alias for attach" {
+    start_isolated_server
+    tmux new-session -d -s dev-other
+    fake_attaching_tmux
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev a other" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t =dev-other" ]
+}
+
+@test "dev <name> from inside tmux switches the client to the new session" {
+    # README: inside tmux, dev <name> switches rather than nesting an attach.
+    start_isolated_server
+    fake_attaching_tmux
+    local sock; sock="$(tmux display-message -p '#{socket_path}')"
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" TMUX="$sock,1,0" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev fresh" </dev/null
+    [ "$status" -eq 0 ]
+    tmux has-session -t '=dev-fresh'
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "switch-client -t =dev-fresh" ]
+}
+
+# Answers the "already exists" question on a real terminal, through the pty
+# helper. The tmux on PATH is whatever the caller exported.
+answer_attach_prompt() {
+    local answer="$1" log="$BATS_TEST_TMPDIR/prompt.log" keys="$BATS_TEST_TMPDIR/prompt.keys" i
+    mkfifo "$keys"
+    python3 "$PROJECT_ROOT/tests/pty_client.py" "$keys" "$log" 120 40 -- \
+        zsh -c 'source "$1" 2>/dev/null; dev proj' _ "$DEV_ZSH" >/dev/null 2>&1 3>&- &
+    local client=$!
+    for i in $(seq 1 50); do grep -aq 'Attach to it?' "$log" 2>/dev/null && break; sleep 0.2; done
+    grep -aq "Session 'proj' already exists" "$log"
+    printf '%s\r' "$answer" > "$keys"
+    for i in $(seq 1 50); do kill -0 "$client" 2>/dev/null || break; sleep 0.2; done
+    kill "$client" 2>/dev/null || true
+    PROMPT_LOG="$log"
+}
+
+@test "on a terminal, answering n to the existing-session prompt cancels" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    answer_attach_prompt n
+    grep -aq 'Operation cancelled' "$PROMPT_LOG"
+    tmux has-session -t '=dev-proj'
+}
+
+@test "on a terminal, answering y to the existing-session prompt attaches" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    fake_attaching_tmux
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" answer_attach_prompt y
+    [ "$(cat "$BATS_TEST_TMPDIR/attach.log")" = "attach -t =dev-proj" ]
+    run grep -a 'Operation cancelled' "$PROMPT_LOG"
+    [ "$status" -ne 0 ]
 }
 
 # ─── B6: colour only on a terminal (US-4) ───
@@ -551,20 +682,13 @@ sys.exit(proc.wait())
     [[ "$output" == *"cannot be empty"* ]]
 }
 
-@test "_dev_validate_name rejects special characters" {
-    run_zsh_func '_dev_validate_name "my project"'
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"letters, numbers, hyphens, and underscores"* ]]
-}
-
-@test "_dev_validate_name rejects dots" {
-    run_zsh_func '_dev_validate_name "my.project"'
-    [ "$status" -ne 0 ]
-}
-
-@test "_dev_validate_name rejects slashes" {
-    run_zsh_func '_dev_validate_name "my/project"'
-    [ "$status" -ne 0 ]
+@test "_dev_validate_name rejects spaces, dots and slashes" {
+    local name
+    for name in "my project" "my.project" "my/project"; do
+        run zsh -c 'source "$1" 2>/dev/null; _dev_validate_name "$2"' _ "$DEV_ZSH" "$name" </dev/null
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"letters, numbers, hyphens, and underscores"* ]]
+    done
 }
 
 # ─── _dev_center_text ───
@@ -601,14 +725,13 @@ sys.exit(proc.wait())
     [[ "$output" == *"Dev session manager"* ]]
 }
 
-@test "dev help shows prerequisites section" {
+@test "dev help shows the prerequisites and each optional tool" {
     run_dev help
     [[ "$output" == *"Prerequisites"* ]]
-}
-
-@test "dev help shows optional tools section" {
-    run_dev help
     [[ "$output" == *"Optional tools"* ]]
+    [[ "$output" == *"claude"* ]]
+    [[ "$output" == *"kb"* ]]
+    [[ "$output" == *"lazygit"* ]]
 }
 
 @test "dev help shows commands section" {
@@ -679,6 +802,13 @@ sys.exit(proc.wait())
     [[ "$output" == *"$expected"* ]]
 }
 
+@test "dev v is alias for version" {
+    local expected=$(grep -m1 '^DEV_VERSION=' "$DEV_ZSH" | cut -d'"' -f2)
+    run_dev v
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$expected"* ]]
+}
+
 @test "dev --version is alias for version" {
     local expected=$(grep -m1 '^DEV_VERSION=' "$DEV_ZSH" | cut -d'"' -f2)
     run_dev --version
@@ -713,6 +843,10 @@ sys.exit(proc.wait())
     [[ "$output" == *"Kanban board popup"* ]]
     [[ "$output" == *"Git UI popup"* ]]
     [[ "$output" == *"Terminal popup"* ]]
+    [[ "$output" == *"Prefix N"*"New branch as a grid tab"* ]]
+    [[ "$output" == *"Prefix X"*"Remove this tab's worktree"* ]]
+    [[ "$output" == *"Prefix S"*"coordinator agent"* ]]
+    [[ "$output" == *"Prefix O"*"Dashboard"* ]]
 }
 
 @test "dev t is alias for tmux" {
@@ -735,16 +869,39 @@ sys.exit(proc.wait())
 
 # ─── dev ls ───
 
-@test "dev ls requires tmux" {
-    # This test verifies tmux is checked; if tmux is installed it will work
-    run_dev ls
-    if command -v tmux &>/dev/null; then
-        [ "$status" -eq 0 ]
-        [[ "$output" == *"Active dev sessions"* ]]
-    else
+@test "dev ls, attach, kill and clean require tmux" {
+    local nopath; nopath="$(path_with)"
+    local cmd
+    for cmd in "ls" "attach proj" "kill proj" "clean"; do
+        run env PATH="$nopath" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev $cmd" </dev/null
         [ "$status" -ne 0 ]
         [[ "$output" == *"tmux is not installed"* ]]
-    fi
+    done
+}
+
+@test "dev ls lists only dev sessions, without the dev- prefix" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    run_dev ls
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -q '^  proj:'
+    [[ "$output" != *"dev-proj"* ]]
+    [[ "$output" != *"keep"* ]]
+}
+
+@test "dev ls says when there are no dev sessions" {
+    start_isolated_server keep
+    run_dev ls
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No dev sessions found"* ]]
+}
+
+@test "dev list is an alias for ls" {
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    run_dev list
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -q '^  proj:'
 }
 
 # ─── dev attach (validation) ───
@@ -758,6 +915,7 @@ sys.exit(proc.wait())
 @test "dev attach with invalid name shows error" {
     run_dev 'attach "bad name"'
     [ "$status" -ne 0 ]
+    [[ "$output" == *"letters, numbers, hyphens, and underscores"* ]]
 }
 
 # ─── dev kill (validation) ───
@@ -768,11 +926,18 @@ sys.exit(proc.wait())
     [[ "$output" == *"Usage: dev kill"* ]]
 }
 
+@test "dev kill with invalid name shows error" {
+    run_dev 'kill "bad name"'
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"letters, numbers, hyphens, and underscores"* ]]
+}
+
 @test "dev kill nonexistent session shows error" {
     if ! command -v tmux &>/dev/null; then
         skip "tmux not installed"
     fi
     run_dev kill nonexistent-test-session-xyz
+    [ "$status" -ne 0 ]
     [[ "$output" == *"not found"* ]]
 }
 
@@ -790,6 +955,14 @@ sys.exit(proc.wait())
     [ "$status" -eq 0 ]
     [[ "$output" == *"Reloading"* ]]
     [[ "$output" == *"updated"* ]]
+}
+
+@test "dev reload names the keys left unbound for a missing kb and lazygit" {
+    start_isolated_server
+    run env PATH="$(path_with tmux)" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev reload" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"kb is not installed, so prefix k is not bound"* ]]
+    [[ "$output" == *"lazygit is not installed, so prefix g is not bound"* ]]
 }
 
 # ─── Session creation (integration, needs tmux) ───
@@ -810,29 +983,11 @@ sys.exit(proc.wait())
     [ "$status" -eq 0 ]
 }
 
-# ─── _dev_show_prerequisites ───
-
-@test "_dev_show_prerequisites shows required and optional sections" {
-    run_zsh_func '_dev_show_prerequisites'
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Prerequisites"* ]]
-    [[ "$output" == *"Optional tools"* ]]
-    [[ "$output" == *"claude"* ]]
-    [[ "$output" == *"kb"* ]]
-    [[ "$output" == *"lazygit"* ]]
-}
-
 # ─── Popup keybinding guards ───
 
 @test "_dev_setup_popup_keybindings returns non-zero without tmux server" {
     run zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_setup_popup_keybindings"
     [ "$status" -ne 0 ]
-}
-
-@test "_dev_bind_popup is defined after sourcing" {
-    run zsh -c "source '$DEV_ZSH' 2>/dev/null; type _dev_bind_popup"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"function"* ]]
 }
 
 # ─── _dev_session_not_found ───
@@ -890,13 +1045,6 @@ sys.exit(proc.wait())
     [[ "$output" == *"non-interactive"* ]]
 }
 
-@test "dev <name> does not hang when stdin is not a TTY" {
-    start_isolated_server dev-ttyguard
-    run timeout 5 zsh -c "source '$DEV_ZSH' 2>/dev/null; dev ttyguard" </dev/null
-    # 124 is timeout(1) killing a hung prompt — the bug this guards against
-    [ "$status" -ne 124 ]
-}
-
 # LINT, not a behaviour test: the prompt is gated behind [[ ! -t 0 ]], so the
 # 'read' call is unreachable without a pty harness. Kept as a narrow static
 # check rather than dropped, and scoped to 'read' as a command so an innocent
@@ -928,13 +1076,6 @@ sys.exit(proc.wait())
 
 # ─── Issue 5: Double-prefix normalization ───
 
-@test "_dev_normalize_session_name does not double-prefix dev-dev-" {
-    run_zsh_func '_dev_normalize_session_name dev-myproject'
-    [ "$output" = "dev-myproject" ]
-    # Explicitly verify no double prefix
-    [[ "$output" != "dev-dev-"* ]]
-}
-
 @test "_dev_display_name strips only one prefix from dev-dev-name" {
     # If someone passes dev-dev-x, display name should be dev-x (one prefix stripped)
     run_zsh_func '_dev_display_name dev-dev-myproject'
@@ -944,9 +1085,20 @@ sys.exit(proc.wait())
 # ─── Issue 7: dev reload should not print success when keybindings are skipped ───
 
 @test "dev reload does not print success when keybindings are skipped" {
-    # When _dev_setup_popup_keybindings returns early (no tmux server),
-    # reload should not print the success message
+    # Two actions on one key is the binding error that fails the setup.
+    start_isolated_server
+    export DEV_KEY_AGENT=j
     run_dev reload
+    [[ "$output" == *"Some keybindings were skipped"* ]]
+    [[ "$output" != *"Popup keybindings updated"* ]]
+}
+
+@test "dev reload does not print success when the agent key is left unbound" {
+    start_isolated_server
+    export DEV_AI_CMD='claude --model opus'
+    run_dev reload
+    [[ "$output" == *"DEV_AI_ARGS"* ]]
+    [[ "$output" == *"Some keybindings were skipped"* ]]
     [[ "$output" != *"Popup keybindings updated"* ]]
 }
 
@@ -959,7 +1111,7 @@ sys.exit(proc.wait())
     start_isolated_server keep
     tmux new-session -d -s dev-project
     run_dev kill proj
-    [ "$status" -eq 0 ]
+    [ "$status" -ne 0 ]
     [[ "$output" == *"not found"* ]]
     tmux has-session -t '=dev-project'
 }
@@ -969,6 +1121,7 @@ sys.exit(proc.wait())
     tmux new-session -d -s dev-project
     fake_attaching_tmux
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c "source '$DEV_ZSH' 2>/dev/null; dev attach proj" </dev/null
+    [ "$status" -ne 0 ]
     [[ "$output" == *"not found"* ]]
     [ ! -s "$BATS_TEST_TMPDIR/attach.log" ]
 }
@@ -1051,4 +1204,57 @@ reserved_names() {
     local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "a"')"
     [[ "$binding" == *"$BATS_TEST_TMPDIR/opt/bin/dev"* ]]
     [[ "$binding" != *"cellar"* ]]
+}
+
+# ─── Unknown subcommands and dev's own entry points ───
+
+@test "dev grid with an unknown command fails and builds nothing" {
+    isolate_git
+    local repo; repo="$(make_repo)"
+    start_isolated_server keep
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid bogus' _ "$repo" "$DEV_ZSH" </dev/null
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Unknown grid command: bogus"* ]]
+    [ "$(session_names)" = "keep" ]
+}
+
+@test "dev agent with no or an unknown command shows its usage" {
+    local args
+    for args in "" "bogus"; do
+        run zsh -c 'source "$1" 2>/dev/null; dev agent $2' _ "$DEV_ZSH" "$args" </dev/null
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"Usage: dev agent"* ]]
+    done
+}
+
+@test "dev agent dashboard and overview outside a grid say there is none" {
+    start_isolated_server keep
+    local verb
+    for verb in dashboard overview; do
+        run zsh -c 'source "$1" 2>/dev/null; dev agent "$2"' _ "$DEV_ZSH" "$verb" </dev/null
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"No grid here"* ]]
+    done
+}
+
+@test "the __overview entry point 3.0.0 keys still run says there is no grid" {
+    # A server bound by 3.0.0 runs this until the key is rebound.
+    start_isolated_server keep
+    local pane; pane="$(tmux display-message -p -t '=keep:' '#{pane_id}')"
+    run zsh "$DEV_ZSH" __overview "$pane" "" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No grid here"* ]]
+}
+
+@test "every command dev dispatches is a reserved name" {
+    # A command missing from the list would be refused nowhere else: help
+    # would not name it, and the reserved-name tests would never run it.
+    local reserved labels label
+    reserved=" $(zsh -c 'source "$1" 2>/dev/null; print -r -- "${DEV_RESERVED_NAMES[*]}"' _ "$DEV_ZSH" </dev/null) "
+    labels="$(sed -n '/^dev() {/,/^}/p' "$DEV_ZSH" | sed -n 's/^        \([^ #(][^ ]*\))$/\1/p' | tr '|' '\n')"
+    [[ "$labels" == *ls* ]]
+    while IFS= read -r label; do
+        [[ "$label" == -* || "$label" == __* || "$label" == '""' || "$label" == '*' ]] && continue
+        [[ "$reserved" == *" $label "* ]] || { echo "dev $label is not in DEV_RESERVED_NAMES" >&2; return 1; }
+    done <<< "$labels"
 }

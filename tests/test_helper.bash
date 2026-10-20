@@ -30,7 +30,20 @@ isolate_tmux() {
     # real directory to point at rather than letting tmux fall back silently.
     export HOME="$BATS_TEST_TMPDIR/home"
     export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+    export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
     mkdir -p "$HOME/code" "$XDG_CONFIG_HOME"
+
+    # A developer's exported DEV_* settings outrank the config file, so one
+    # left in their shell would change what every test sees.
+    local var
+    for var in $(compgen -e | grep '^DEV_'); do unset "$var"; done
+
+    # A test that opens an agent without a launcher must never start the real
+    # claude: it would sign in, spend, and read the developer's projects.
+    mkdir -p "$BATS_TEST_TMPDIR/stub-bin"
+    printf '#!/bin/sh\necho "stub claude $*"\nexec sleep 600\n' > "$BATS_TEST_TMPDIR/stub-bin/claude"
+    chmod +x "$BATS_TEST_TMPDIR/stub-bin/claude"
+    case ":$PATH:" in *":$BATS_TEST_TMPDIR/stub-bin:"*) ;; *) export PATH="$BATS_TEST_TMPDIR/stub-bin:$PATH" ;; esac
 
     command -v tmux &>/dev/null || return 0
 

@@ -284,6 +284,8 @@ agent_command() {
     zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
     press "$(tmux list-panes -a -F '#{pane_id}' | head -1)" j
     [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+    # Or the payload was never reached: no popup, nothing run, still "safe".
+    [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^term-')" -eq 1 ]
 }
 
 @test "a grid tab's popups start in its workspace, wherever its shell has gone" {

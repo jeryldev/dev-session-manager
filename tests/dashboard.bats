@@ -100,10 +100,3 @@ for line in sys.stdin.buffer.read().decode("utf-8").splitlines():
     local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "O"')"
     [[ "$binding" == *"run-shell"* && "$binding" == *"__dashboard"* && "$binding" == *"#{pane_id}"* ]]
 }
-
-@test "the dashboard outside a grid says so" {
-    start_isolated_server dev-plain
-    run zsh "$DEV_ZSH" __dashboard "$(tmux display-message -p -t '=dev-plain:' '#{pane_id}')" "" </dev/null
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"No grid here"* ]]
-}

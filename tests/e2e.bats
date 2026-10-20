@@ -125,7 +125,7 @@ attached() {
     until_true '[ "$(attached "ai-${ws}")" = 1 ]'
     # Again, from inside the popup.
     press "$PREFIX" a
-    sleep 1
+    until_true 'grep -aq "Already in this popup" "$SCREEN"'
     [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^ai-')" -eq 1 ]
     # Not shown inside itself a second time.
     [ "$(attached "ai-${ws}")" = 1 ]
@@ -178,7 +178,7 @@ attached() {
     until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
     press "$PREFIX" X
     until_true 'grep -aq "Remove tab 2" "$SCREEN"'
-    ! grep -aq "not a grid tab" "$SCREEN"
+    [ "$(grep -ac "not a grid tab" "$SCREEN")" -eq 0 ]
     press y $'\r'
     until_true '[ ! -d "$CODE/myrepo-feat" ]'
     until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'

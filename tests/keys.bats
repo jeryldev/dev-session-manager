@@ -22,6 +22,17 @@ dev_cmd() { run zsh -c 'source "$1" 2>/dev/null; shift; dev "$@"' _ "$DEV_ZSH" "
 
 prefix_key() { tmux list-keys -T prefix | awk -v k="$1" '$4 == k'; }
 
+# A PATH with only the tools dev needs, so kb and lazygit are absent whatever
+# this machine has installed.
+path_without_extras() {
+    local dir="$BATS_TEST_TMPDIR/base-path" tool found
+    mkdir -p "$dir"
+    for tool in zsh sh tmux awk sed grep tr cksum cat mkdir mv rm sort od head tail cut wc env; do
+        found="$(type -P "$tool")" && ln -sf "$found" "$dir/$tool"
+    done
+    printf '%s' "$dir"
+}
+
 # The shape v2.3.0 bound `prefix a` with, before any of this.
 LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -c "#{pane_current_path}" "claude --enable-auto-mode"; tmux display-popup -w 90% -h 90% -b single -E "tmux attach-session -t $SESSION"'
 
@@ -41,11 +52,14 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
 }
 
 @test "a changed setting rebinds on the next shell" {
-    # Story C: an overnight change must take effect without a reload.
-    load_dev
+    # Story C: an overnight change must take effect without a reload. The
+    # first shell must not see the machine's own lazygit, or nothing changes.
+    local base; base="$(path_without_extras)"
+    run env PATH="$base" zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    [[ "$(prefix_key g)" != *"lazygit"* ]]
     mkdir -p "$BATS_TEST_TMPDIR/bin"
     printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/bin/lazygit"; chmod +x "$BATS_TEST_TMPDIR/bin/lazygit"
-    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    run env PATH="$BATS_TEST_TMPDIR/bin:$base" zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
     [[ "$(prefix_key g)" == *"lazygit"* ]]
 }
 
@@ -139,6 +153,8 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
     for digit in 1 5 9; do
         [[ "$(prefix_key "$digit")" == *"__switch ${digit} "*"select-window -t :=${digit}"* ]]
     done
+    [[ "$(prefix_key 1)" == *'#{==:#{@dev_popup_kind},ai}'* ]]
+    [[ "$(prefix_key 1)" == *'#{==:#{@dev_popup_kind},coordinator}'* ]]
 }
 
 @test "a digit the user bound is left alone" {
@@ -164,4 +180,11 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
     [[ "$(prefix_key g)" == *"lazygit"* ]]
     [[ "$output" != *"prefix g"* ]]
+}
+
+@test "an ai_cmd with flags in it leaves the agent key unbound and says where flags go" {
+    export DEV_AI_CMD='claude --x'
+    load_dev
+    [ -z "$(prefix_key a)" ]
+    [[ "$output" == *"DEV_AI_ARGS"* ]]
 }

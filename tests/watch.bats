@@ -112,6 +112,14 @@ finish() { wait "$WATCH"; }
     grep -q 'heartbeat.*1 myrepo none.*2 myrepo-feat idle' "$OUT"
 }
 
+@test "--every repeats the heartbeat while the watch runs" {
+    # US-32.6: the opening beat alone would leave a long watch silent.
+    start_agent_showing claude-2.1.286-idle.txt
+    watch_for --for 5 --every 2
+    finish
+    [ "$(grep -c 'heartbeat' "$OUT")" -ge 2 ]
+}
+
 @test "--json prints one parseable object per line with stable keys" {
     # US-32.7
     start_agent_showing claude-2.1.286-working.txt
@@ -179,8 +187,50 @@ PY
     watch_for --for 8
     sleep 1.5
     zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid add later' _ "$REPO" "$DEV_ZSH" </dev/null >/dev/null
+    [ -n "$(tmux list-windows -t '=dev-myrepo-grid:' -F '#{window_index}' | grep -x 3)" ]
     finish
     ! grep -q 'none → none' "$OUT"
+}
+
+@test "a heartbeat after a tab was added lists the new tab" {
+    start_agent_showing claude-2.1.286-idle.txt
+    watch_for --for 6 --every 2
+    sleep 1.5
+    zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid add later' _ "$REPO" "$DEV_ZSH" </dev/null >/dev/null
+    finish
+    grep -q 'heartbeat.*3 myrepo-later none' "$OUT"
+}
+
+@test "a heartbeat after a tab was removed no longer lists it" {
+    git -C "$REPO" worktree add -q -b gone "$CODE/myrepo-gone"
+    zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid sync' _ "$REPO" "$DEV_ZSH" </dev/null >/dev/null
+    tmux list-windows -t '=dev-myrepo-grid:' -F '#{window_index} #{window_name}' | grep -qx '3 myrepo-gone'
+    watch_for --for 6 --every 2
+    sleep 1.5
+    zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid remove 3 --yes' _ "$REPO" "$DEV_ZSH" </dev/null >/dev/null
+    finish
+    grep -q 'heartbeat.*3 myrepo-gone' "$OUT"
+    [ "$(grep 'heartbeat' "$OUT" | tail -1 | grep -c 'myrepo-gone')" -eq 0 ]
+}
+
+@test "an agent already over the context threshold at the start is not an event" {
+    # The event is the crossing; a watch started late has not seen one.
+    start_agent_showing claude-2.1.286-idle-after-reply.txt
+    watch_for --for 4 --ctx 5
+    finish
+    grep -q 'watch stopped' "$OUT"
+    [ "$(grep -c 'context' "$OUT")" -eq 0 ]
+}
+
+@test "dropping under the context threshold and crossing it again is a new event" {
+    start_agent_showing claude-2.1.286-idle-after-reply.txt
+    watch_for --for 8 --ctx 5
+    sleep 2.5
+    switch_to claude-2.1.286-idle.txt
+    sleep 2.5
+    switch_to claude-2.1.286-idle-after-reply.txt
+    finish
+    [ "$(grep -c 'context 7%' "$OUT")" -eq 1 ]
 }
 
 @test "a watch leaves no traps behind in the shell that ran it" {

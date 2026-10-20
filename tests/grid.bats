@@ -259,9 +259,43 @@ add_branch() {
     export DEV_WORKTREE_CREATE_CMD="exit 3"
     add_branch "$repo" nope
     [ "$status" -ne 0 ]
-    [[ "$output" == *"exit 3"* || "$output" == *"exited 3"* ]]
+    # The message, not the echoed command ("exit 3"), carries the status.
+    [[ "$output" == *"create command exited 3"* ]]
     [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
     [ ! -d "$CODE/myrepo-nope" ]
+}
+
+@test "a create command that prints no existing directory adds no tab" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    export DEV_WORKTREE_CREATE_CMD="echo /nonexistent"
+    add_branch "$repo" x
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no existing directory"* ]]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+@test "dev grid add refuses when the new worktree's directory already exists" {
+    # git would happily check out into an existing empty directory.
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    mkdir "$CODE/myrepo-x"
+    add_branch "$repo" x
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$CODE/myrepo-x already exists"* ]]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+    run ! git -C "$repo" show-ref --verify --quiet refs/heads/x
+}
+
+@test "a new branch starts from the HEAD of the worktree it is added from" {
+    # prefix N runs in the current tab: the new branch builds on what you see.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    git -C "$CODE/myrepo-feat" commit -q --allow-empty -m feat-work
+    run_grid "$repo"
+    add_branch "$CODE/myrepo-feat" new
+    [ "$status" -eq 0 ]
+    [ "$(git -C "$repo" rev-parse new)" = "$(git -C "$repo" rev-parse feat)" ]
 }
 
 @test "a branch name reaches the create command as data, never as code" {
@@ -351,6 +385,58 @@ prefix_key() { tmux list-keys -T prefix | awk -v k="$1" '$4 == k'; }
     [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 }
 
+# `dev ARGS` on a real terminal through the pty helper. Keys go in with
+# tty_keys, the screen collects in $TTY_LOG. Waits run up to 30s: on a loaded
+# machine a prompt can take far longer than usual, and each ends when done.
+tty_dev() {
+    local dir="$1"; shift
+    TTY_LOG="$BATS_TEST_TMPDIR/tty.log" TTY_KEYS="$BATS_TEST_TMPDIR/tty.keys"
+    rm -f "$TTY_LOG" "$TTY_KEYS"
+    mkfifo "$TTY_KEYS"
+    python3 "$PROJECT_ROOT/tests/pty_client.py" "$TTY_KEYS" "$TTY_LOG" 120 40 -- \
+        zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev "$@"' _ "$dir" "$DEV_ZSH" "$@" >/dev/null 2>&1 3>&- &
+    TTY_CLIENT=$!
+}
+tty_keys() { printf '%s' "$1" > "$TTY_KEYS"; }
+tty_wait_for() {
+    local i
+    for i in $(seq 1 150); do grep -aq -- "$1" "$TTY_LOG" 2>/dev/null && return 0; sleep 0.2; done
+    return 1
+}
+tty_wait_exit() {
+    local i
+    for i in $(seq 1 150); do kill -0 "$TTY_CLIENT" 2>/dev/null || return 0; sleep 0.2; done
+    return 1
+}
+
+@test "on a terminal, a failed prompt add stays open until Enter" {
+    # prefix N's popup closes with the command; the error must be readable.
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tty_dev "$repo" grid add --prompt
+    tty_wait_for 'Branch for the new tab'
+    tty_keys $'bad name\r'
+    tty_wait_for 'Press Enter to close'
+    grep -aq 'not a valid branch name' "$TTY_LOG"
+    sleep 0.5
+    kill -0 "$TTY_CLIENT"
+    tty_keys $'\r'
+    tty_wait_exit
+}
+
+@test "on a terminal, a failed prefix X remove stays open until Enter" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tmux new-session -d -s other
+    tty_dev "$repo" grid remove --pane "$(tmux display-message -p -t '=other:' '#{pane_id}')"
+    tty_wait_for 'Press Enter to close'
+    grep -aq 'not a grid tab' "$TTY_LOG"
+    sleep 0.5
+    kill -0 "$TTY_CLIENT"
+    tty_keys $'\r'
+    tty_wait_exit
+}
+
 @test "prefix N opens the new-branch prompt in the current pane's directory" {
     start_isolated_server
     zsh -c "source '$DEV_ZSH'" </dev/null
@@ -435,6 +521,17 @@ grid_cmd() {
     [[ "$(tmux show-options -w -t '=dev-myrepo-grid:3' -v @dev_ws_id)" =~ ^myrepo-b- ]]
 }
 
+@test "sync names a new tab by its .dev-grid label" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    printf '%s\n' "$repo" > "$repo/.dev-grid"
+    run_grid "$repo"
+    printf '%s\tapi\n' "$CODE/myrepo-a" >> "$repo/.dev-grid"
+    grid_cmd "$repo" sync
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 api' ]
+}
+
 @test "sync with nothing new says so" {
     # US-19.4
     local repo; repo="$(make_repo)"
@@ -494,6 +591,25 @@ grid_cmd() {
     grid_cmd "$repo" prune --dry-run
     [[ "$output" == *"myrepo-gone"* ]]
     [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-gone' ]
+}
+
+# A window the user opens in the grid themselves carries no workspace stamp.
+@test "dev grid status calls a plain window not a workspace" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tmux new-window -d -t '=dev-myrepo-grid:2' -n scratch
+    grid_cmd "$repo" status
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ 2\ +scratch\ +-\ +not\ a\ workspace ]]
+}
+
+@test "prune leaves a plain window alone" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tmux new-window -d -t '=dev-myrepo-grid:2' -n scratch
+    grid_cmd "$repo" prune --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Nothing to prune"* ]]
 }
 
 @test "dev grid kill removes the grid and its popups" {
@@ -583,9 +699,21 @@ grid_cmd() {
     export DEV_GRID_CMD="echo broken >&2; exit 4"
     run_grid "$repo"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"exit 4"* ]]
+    [[ "$output" == *"grid_cmd exited 4"* ]]
     [[ "$output" == *"broken"* ]]
     ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}
+
+@test "a relative path from DEV_GRID_CMD is read from the repo root" {
+    # Run two levels down, where ../myrepo-a names another directory that
+    # also exists: only the repo root gives the right one.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    git -C "$repo" worktree add -q -b deep "$CODE/nested/deep/wt"
+    mkdir -p "$CODE/nested/deep/myrepo-a"
+    export DEV_GRID_CMD="printf '../myrepo-a\tslot\n'"
+    run_grid "$CODE/nested/deep/wt"
+    [ "$(text_opt -w -t '=dev-myrepo-grid:1' @dev_workspace)" = "$CODE/myrepo-a" ]
 }
 
 @test "a DEV_GRID_CMD that prints nothing is an error too" {
@@ -666,8 +794,42 @@ many_worktrees() {
     kill "$client" 2>/dev/null || true
     # Picks 2, 4 and 5 of the list as git orders it: myrepo, io1, io10, io11, io2, ...
     [ "$(windows dev-myrepo-grid)" = $'1 myrepo-io1\n2 myrepo-io11\n3 myrepo-io2' ]
-    [ -f "$REPO/.dev-grid" ]
+    [ "$(cat "$REPO/.dev-grid")" = "$(printf '%s\n' "$CODE/myrepo-io1" "$CODE/myrepo-io11" "$CODE/myrepo-io2")" ]
     grep -qx '.dev-grid' "$REPO/.git/info/exclude"
+    # The saved choice is the next build's list: off a terminal, no prompt.
+    tmux kill-session -t '=dev-myrepo-grid'
+    run_grid "$REPO"
+    [[ "$output" != *"Pick up to 9"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo-io1\n2 myrepo-io11\n3 myrepo-io2' ]
+}
+
+# Answers the over-nine prompt with a bad pick and checks nothing was built.
+bad_pick() {
+    many_worktrees
+    tty_dev "$REPO" grid
+    tty_wait_for 'Pick up to 9'
+    tty_keys "$1"$'\r'
+    # A build that went ahead attaches and never exits; the checks say why.
+    tty_wait_exit || true
+    [ ! -e "$REPO/.dev-grid" ]
+    [ -z "$(tmux list-sessions 2>/dev/null)" ]
+    grep -aq -- "$2" "$TTY_LOG"
+}
+
+@test "a pick that is not a number or a range builds nothing" {
+    bad_pick '1 x' "'x' is not a number or a range"
+}
+
+@test "a pick past the last workspace builds nothing" {
+    bad_pick '1 13' '13 is not in 1-12'
+}
+
+@test "more than nine picks build nothing" {
+    bad_pick '1-10' 'pick between 1 and 9'
+}
+
+@test "an empty pick builds nothing" {
+    bad_pick '' 'pick between 1 and 9'
 }
 
 @test "--session builds under another name, and verbs still find it" {
@@ -696,6 +858,9 @@ many_worktrees() {
     run_grid "$REPO" --filter io1
     git -C "$REPO" worktree add -q -b feat "$CODE/myrepo-feat"
     grid_cmd "$REPO" add feat
+    # Or the grid holds no tab outside the filter and this proves nothing.
+    [ "$status" -eq 0 ]
+    [[ "$(windows dev-myrepo-grid)" == *$'\n4 myrepo-feat'* ]]
     grid_cmd "$REPO" prune --dry-run
     [[ "$output" == *"Nothing to prune"* ]]
 }
@@ -727,6 +892,22 @@ many_worktrees() {
     grid_cmd "$repo" prune
     [ "$status" -eq 0 ]
     [ "$(tmux list-windows -t '=dev-myrepo-grid:' -F '#{window_name}')" = $'myrepo\nmyrepo-keep' ]
+}
+
+@test "--session with a name dev would not accept builds nothing" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo" --session 'bad.name'
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Session name can only contain"* ]]
+    [ -z "$(tmux list-sessions 2>/dev/null)" ]
+}
+
+@test "an unknown option is an error and builds nothing" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo" --bogus
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unknown option --bogus"* ]]
+    [ -z "$(tmux list-sessions 2>/dev/null)" ]
 }
 
 @test "an option without its value is an error, not a hang" {
@@ -791,6 +972,30 @@ row = json.loads(sys.stdin.readline())
 assert row["label"] == "api|v2" and row["branch"] == "a" and row["path"].endswith("myrepo-a"), row'
 }
 
+@test "a bare repo's worktrees each get a tab, the bare directory none" {
+    # The layout `git clone --bare` plus worktrees: no main checkout at all.
+    local src; src="$(make_repo src)"
+    git clone -q --bare "$src" "$CODE/proj.git"
+    git -C "$CODE/proj.git" worktree add -q "$CODE/proj-main" main
+    git -C "$CODE/proj.git" worktree add -q -b a "$CODE/proj-a"
+    run_grid "$CODE/proj-a"
+    # Named after the bare directory, .git and all; tabs in git's (name) order.
+    run windows dev-proj-git-grid
+    [ "$output" = $'1 proj-a\n2 proj-main' ]
+}
+
+@test "a non-ASCII workspace path survives a C locale" {
+    # tmux turns non-ASCII into _ on the way out when the client is not
+    # UTF-8; dev's hex text options must still give the real path back.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/café"
+    export LC_ALL=C
+    run_grid "$repo"
+    # A garbled path would read as missing, not as branch a.
+    grid_cmd "$repo" status
+    [[ "$output" =~ 2\ +[^\ ]+\ +a\ +clean ]]
+}
+
 @test "a workspace git cannot read is reported, never shown as clean" {
     local repo; repo="$(make_repo)"
     git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
@@ -818,6 +1023,18 @@ remove_cmd() {
     [ ! -d "$CODE/myrepo-feat" ]
     [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n3 myrepo-keep' ]
     git -C "$repo" show-ref --verify --quiet refs/heads/feat
+}
+
+@test "a new tab fills the lowest free number and no tab moves" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b a "$CODE/myrepo-a"
+    git -C "$repo" worktree add -q -b b "$CODE/myrepo-b"
+    run_grid "$repo"
+    remove_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    add_branch "$repo" x
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-x\n3 myrepo-b' ]
 }
 
 @test "remove refuses a workspace with uncommitted changes" {
@@ -886,6 +1103,77 @@ remove_cmd() {
     [ ! -d "$CODE/myrepo-feat" ]
 }
 
+@test "a detached worktree gives the remove command an empty branch" {
+    # Agent-grid slots are detached; "(detached abc123)" is not a branch name.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q --detach "$CODE/myrepo-slot"
+    run_grid "$repo"
+    export DEV_WORKTREE_REMOVE_CMD="printf '[%s]' {branch} > '$BATS_TEST_TMPDIR/got'; git worktree remove {path}"
+    remove_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/got")" = "[]" ]
+}
+
+@test "a workspace git cannot read counts as changed and is kept without --force" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    echo "gitdir: /nowhere" > "$CODE/myrepo-feat/.git"
+    remove_cmd "$repo" 2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--force"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "remove with no tab removes the tab it is run in" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run env TMUX_PANE="$pane" zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid remove --yes' _ "$CODE/myrepo-feat" "$DEV_ZSH" </dev/null
+    [ "$status" -eq 0 ]
+    [ ! -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+@test "remove with no tab outside tmux prints its usage" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid remove --yes' _ "$repo" "$DEV_ZSH" </dev/null
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Usage: dev grid remove"* ]]
+}
+
+@test "remove --pane refuses a pane that is not a grid tab" {
+    # prefix X pressed in a popup or another session must delete nothing.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    tmux new-session -d -s other -c "$CODE/myrepo-feat"
+    local pane; pane="$(tmux display-message -p -t '=other:' '#{pane_id}')"
+    remove_cmd "$repo" --pane "$pane"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not a grid tab"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "remove --pane refuses a popup of a grid tab" {
+    # A popup's pane leads back to the grid through @dev_origin, but its
+    # window number is the popup's, not a tab's: it must delete nothing.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    tmux new-session -d -s popup
+    tmux new-window -d -t '=popup:2'
+    tmux set-option -w -t '=popup:2' @dev_origin "$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    remove_cmd "$repo" --pane "$(tmux display-message -p -t '=popup:2' '#{pane_id}')"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not a grid tab"* ]]
+    [ -d "$CODE/myrepo-feat" ]
+}
+
 @test "a failing remove command keeps the tab and does not fall back to git" {
     local repo; repo="$(make_repo)"
     git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
@@ -933,11 +1221,12 @@ answer_remove() {
     python3 "$PROJECT_ROOT/tests/pty_client.py" "$keys" "$log" 120 40 -- \
         zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid remove 2' _ "$REPO" "$DEV_ZSH" >/dev/null 2>&1 3>&- &
     local client=$!
-    for i in $(seq 1 30); do grep -aq 'Type y to remove' "$log" 2>/dev/null && break; sleep 0.2; done
+    # Up to 30s each, as for the selection prompt: a loaded machine is slow.
+    for i in $(seq 1 150); do grep -aq 'Type y to remove' "$log" 2>/dev/null && break; sleep 0.2; done
     grep -aq 'myrepo-feat' "$log"
     grep -aq 'branch feat is kept' "$log"
     printf '%s\r' "$answer" > "$keys"
-    for i in $(seq 1 30); do kill -0 "$client" 2>/dev/null || break; sleep 0.2; done
+    for i in $(seq 1 150); do kill -0 "$client" 2>/dev/null || break; sleep 0.2; done
     kill "$client" 2>/dev/null || true
 }
 
@@ -946,8 +1235,9 @@ answer_remove() {
     git -C "$REPO" worktree add -q -b feat "$CODE/myrepo-feat"
     run_grid "$REPO"
     answer_remove n
+    grep -aq 'Kept\.' "$BATS_TEST_TMPDIR/rm.log"
     [ -d "$CODE/myrepo-feat" ]
-    rm -f "$BATS_TEST_TMPDIR/rm.keys"
+    rm -f "$BATS_TEST_TMPDIR/rm.keys" "$BATS_TEST_TMPDIR/rm.log"
     answer_remove y
     [ ! -d "$CODE/myrepo-feat" ]
 }

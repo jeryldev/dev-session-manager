@@ -148,3 +148,50 @@ executed_dev() {
     dev_cmd config list
     ! tmux has-session -t '=dev-config' 2>/dev/null
 }
+
+@test "dev config path prints the settings file" {
+    dev_cmd config path
+    [ "$status" -eq 0 ]
+    [ "$output" = "$CONFIG" ]
+}
+
+@test "dev config with an unknown action shows its usage" {
+    dev_cmd config bogus
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Usage: dev config"* ]]
+}
+
+@test "commented lines are ignored, indented or not" {
+    mkdir -p "$(dirname "$CONFIG")"
+    printf '# ai_cmd = codex\n   # ai_cmd = aider\n   # a note\n' > "$CONFIG"
+    dev_cmd config get ai_cmd
+    [ "$output" = "claude" ]
+    dev_cmd config list
+    [[ "$output" != *"line "* ]]
+}
+
+@test "a value containing = round-trips" {
+    dev_cmd config set ai_args --model=opus
+    [ "$status" -eq 0 ]
+    dev_cmd config get ai_args
+    [ "$output" = "--model=opus" ]
+}
+
+@test "whitespace around a key and its value is trimmed" {
+    mkdir -p "$(dirname "$CONFIG")"
+    printf '  ai_cmd   =   codex   \n' > "$CONFIG"
+    dev_cmd config get ai_cmd
+    [ "$output" = "codex" ]
+}
+
+@test "unsetting a setting withdraws it from the running server" {
+    # The agent popup reads the server's copy; a stale one would keep
+    # launching the old command after the user removed it.
+    start_isolated_server keep
+    dev_cmd config set agent_launch_cmd "mine {ws}"
+    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    [ -n "$(tmux show-options -gqv @dev_cfg_agent_launch_cmd)" ]
+    dev_cmd config unset agent_launch_cmd
+    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    [ -z "$(tmux show-options -gqv @dev_cfg_agent_launch_cmd)" ]
+}

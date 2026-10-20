@@ -81,13 +81,14 @@ coordinators() {
 @test "prefix S inside a worker's popup reaches the same grid's coordinator" {
     # US-33.5
     grid_with_feat
-    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
-    local script; script="$(zsh -c 'source "$1" 2>/dev/null; _dev_popup_script term sh' _ "$DEV_ZSH" </dev/null)"
-    tmux run-shell -t "$(pane_of '=dev-myrepo-grid:2')" "$script" 2>/dev/null || true
+    # nodisplay: the session prefix t would make, without a client to show it.
+    local script; script="$(zsh -c 'source "$1" 2>/dev/null; _dev_popup_script term sh "" nodisplay' _ "$DEV_ZSH" </dev/null)"
+    tmux run-shell -t "$(pane_of '=dev-myrepo-grid:2')" "$script"
     local popup; popup="$(tmux list-sessions -F '#{session_name}' | grep '^term-')"
+    [ -n "$popup" ]
     press_coordinator "$(pane_of "=${popup}:")"
-    press_coordinator "$(pane_of '=dev-myrepo-grid:1')"
     [ "$(coordinators | wc -l | tr -d ' ')" -eq 1 ]
+    [ "$(coordinators | cut -d'|' -f3)" = "$REPO" ]
 }
 
 @test "prefix S inside the coordinator stays there" {
@@ -96,6 +97,7 @@ coordinators() {
     press_coordinator "$(pane_of '=dev-myrepo-grid:1')"
     local name; name="$(coordinators | cut -d'|' -f2)"
     press_coordinator "$(pane_of "=${name}:")"
+    [[ "$output" == *"Already in the coordinator"* ]]
     [ "$(coordinators | wc -l | tr -d ' ')" -eq 1 ]
 }
 
@@ -166,4 +168,26 @@ coordinators() {
     run zsh "$DEV_ZSH" __coordinator "$(pane_of '=dev-plain:')" "" </dev/null
     [ "$status" -eq 0 ]
     [[ "$output" == *"No grid here"* ]]
+}
+
+# What prefix 1-9 runs inside an agent popup; no client in tests.
+press_switch() {
+    run zsh "$DEV_ZSH" __switch "$1" "" "$2" </dev/null
+}
+
+@test "a digit in a popup whose grid is gone says so" {
+    grid_with_feat
+    tmux new-session -d -s orphan
+    # A parent id that no longer exists, as after the grid was killed.
+    tmux set-option -t '=orphan:' @dev_parent '$999'
+    press_switch 1 "$(tmux display-message -p -t '=orphan:' '#{session_id}')"
+    [[ "$output" == *"This popup's tabs are gone"* ]]
+}
+
+@test "a digit in a popup with no client showing its grid says so" {
+    grid_with_feat
+    tmux new-session -d -s popup
+    tmux set-option -t '=popup:' @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    press_switch 1 "$(tmux display-message -p -t '=popup:' '#{session_id}')"
+    [[ "$output" == *"No client shows dev-myrepo-grid"* ]]
 }

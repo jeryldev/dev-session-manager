@@ -303,6 +303,7 @@ _dev_session_not_found() {
     local display_name="$1"
     echo -e "${RED}✗ Session '${display_name}' not found${NC}"
     echo -e "${YELLOW}Tip: Run 'dev ls' to see active sessions${NC}"
+    return 1
 }
 
 # Windows are numbered from 1 on any config, as `dev help` and the grid's
@@ -331,7 +332,7 @@ _dev_window_names() {
         echo -e "${RED}Error: DEV_WINDOWS lists ${#names} windows; prefix 1-9 reaches nine${NC}" >&2
         return 1
     fi
-    print -l -- "${names[@]}"
+    print -rl -- "${names[@]}"
 }
 
 # For options that take a value: `shift 2` without one fails without
@@ -508,7 +509,7 @@ _dev_workspace_entries() {
         return 1
     fi
     [[ -n "$limit" ]] && kept=("${kept[@]:0:$limit}")
-    print -l -- "${kept[@]}"
+    print -rl -- "${kept[@]}"
 }
 
 # Over the cap on a terminal: the user picks up to nine, and the choice is
@@ -725,11 +726,19 @@ _dev_grid_build() {
 # and a printable separator can appear in a path or a name. So tmux is asked
 # only for ids, numbers and the name — last, where any character is safe — and
 # each option is read on its own.
+# tmux reports a window name escaped: a backslash doubled, a control
+# character as \ooo or \n. Undone here, or a label "a\b" reads "a\\b".
+_dev_tmux_unvis() {
+    # print without -r reads the escapes tmux writes; a backslash that was
+    # the user's own arrives doubled, so it survives as one.
+    print -n -- "$1"
+}
+
 _dev_window_table() {
     local window_id index name us=$'\x1f'
     tmux list-windows -t "=${1}:" -F '#{window_id}|#{window_index}|#{window_name}' 2>/dev/null |
         while IFS='|' read -r window_id index name; do
-            print -r -- "${window_id}${us}${index}${us}$(_dev_text_get -w -t "$window_id" @dev_workspace)${us}$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)${us}$(tmux show-options -w -t "$window_id" -qv @dev_agent_started)${us}${name}"
+            print -r -- "${window_id}${us}${index}${us}$(_dev_text_get -w -t "$window_id" @dev_workspace)${us}$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)${us}$(tmux show-options -w -t "$window_id" -qv @dev_agent_started)${us}$(_dev_tmux_unvis "$name")"
         done
 }
 
@@ -1088,7 +1097,7 @@ _dev_grid_remove() {
     local window_id="$(tmux display-message -p -t "=${grid_session}:${index}" '#{window_id}')"
     local workspace="$(_dev_text_get -w -t "$window_id" @dev_workspace)"
     local ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
-    local label="$(tmux display-message -p -t "$window_id" '#{window_name}')"
+    local label="$(_dev_tmux_unvis "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
     if [[ -z "$workspace" ]]; then
         echo -e "${RED}Error: tab ${index} is not a workspace${NC}"
         return 1
@@ -1146,7 +1155,10 @@ _dev_grid_remove() {
         git -C "$repo" worktree prune 2>/dev/null
     elif [[ -n "$remove_cmd" ]]; then
         local cmd="${remove_cmd//\{path\}/${(qq)workspace}}"
-        cmd="${cmd//\{branch\}/${(qq)branch}}"
+        # A detached worktree has no branch; "(detached abc123)" is display text.
+        local real_branch="$branch"
+        [[ "$branch" == "("* ]] && real_branch=""
+        cmd="${cmd//\{branch\}/${(qq)real_branch}}"
         cmd="${cmd//\{force\}/${${force:#0}:+--force}}"
         (cd "$repo" && sh -c "$cmd")
         local rc=$?
@@ -1754,7 +1766,7 @@ _dev_popup_descendants() {
             [[ -n "$id" && "$parent" == "$current" ]] && found+=("$id") queue+=("$id")
         done <<< "$rows"
     done
-    (( ${#found} )) && print -l -- "${found[@]}"
+    (( ${#found} )) && print -rl -- "${found[@]}"
 }
 
 # Popups whose parent session no longer exists. Ids are never reused while
@@ -2035,8 +2047,12 @@ _dev_setup_popup_keybindings() {
     done
 
     [[ -n "${wanted[key_term]}" ]] && _dev_bind_popup "${wanted[key_term]}" Terminal term "${SHELL:-zsh}"
-    if [[ -n "${wanted[key_agent]}" ]] && _dev_validate_ai_cmd; then
-        _dev_bind_popup "${wanted[key_agent]}" "AI assistant" ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
+    if [[ -n "${wanted[key_agent]}" ]]; then
+        if _dev_validate_ai_cmd; then
+            _dev_bind_popup "${wanted[key_agent]}" "AI assistant" ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
+        else
+            bind_status=1
+        fi
     fi
     [[ -n "${wanted[key_new]}" ]] && _dev_bind_key "${wanted[key_new]}" "New branch tab" \
         display-popup -E -w 90% -h 90% -b single -T " New branch tab " \
@@ -2505,9 +2521,14 @@ _dev_agent_watch() {
                 break
             fi
             sleep "$interval"
+            # The heartbeat lists prev_state, so it follows tabs added and
+            # removed while the watch runs.
+            local -A seen=()
             for row in ${(f)"$(_dev_agent_rows)"}; do
                 IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
+                seen[$index]=1
                 prev_label[$index]="$name"
+                : ${prev_state[$index]:=none}
                 if [[ "${prev_state[$index]:-none}" != "$agent" ]]; then
                     _dev_watch_emit change "$index" "${prev_state[$index]:-none}" "$agent" "$detail"
                     if (( notify )) && [[ "$agent" == (waiting|idle|dead|unknown) ]]; then
@@ -2524,6 +2545,9 @@ _dev_agent_watch() {
                 else
                     prev_over[$index]=""
                 fi
+            done
+            for index in ${(k)prev_state}; do
+                (( ${+seen[$index]} )) || unset "prev_state[$index]" "prev_label[$index]" "prev_over[$index]"
             done
             if (( EPOCHSECONDS - last_beat >= every )); then
                 _dev_watch_beat
