@@ -1486,8 +1486,13 @@ dev() {
             _dev_dashboard "$2" "$3" || true
             ;;
 
-        # What prefix 1-9 runs inside an agent popup or the coordinator.
         __dialog) shift; _dev_dialog "$@" ;;
+
+        # A popup key pressed inside another dev popup, and what opens after.
+        __hop) _dev_hop "$2" "$3" "$4" || true ;;
+        __popup) _dev_popup_open "$2" "$3" "$4" ;;
+
+        # What prefix 1-9 runs inside an agent popup or the coordinator.
         __switch)
             _dev_switch_agent "$2" "$3" "$4" || true
             ;;
@@ -1701,6 +1706,13 @@ _dev_validate_ai_cmd() {
     return 0
 }
 
+# The popup key's name for the pane it is pressed in: the tab's workspace id
+# in a grid, else the session, window index and window name.
+_dev_popup_key_format() {
+    local slug='[^a-zA-Z0-9_-]/-/'
+    print -r -- '#{?#{@dev_ws_id},#{@dev_ws_id},#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}}'
+}
+
 # The shell script a popup key runs. tmux expands its #{...} formats at key
 # press time, then hands it to sh.
 #
@@ -1726,19 +1738,32 @@ _dev_validate_ai_cmd() {
 # format expansion (`#S` in a -c path became the session name).
 _dev_popup_script() {
     local prefix="$1" cmd="$2" suffix="${3:+-$3}" display="${4:-display}"
-    local slug='[^a-zA-Z0-9_-]/-/'
-    local key='#{?#{@dev_ws_id},#{@dev_ws_id},#{s/'"${slug}"':session_name}-#{window_index}-#{s/'"${slug}"':window_name}}'
+    local key="$(_dev_popup_key_format)"
     local origin='#{?#{@dev_origin},#{@dev_origin},#{pane_id}}'
     local create='SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" "zsh '"${(qq)DEV_SCRIPT}"' __in #{pane_id} '"${(qq)cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
     # Pressed inside the very popup it would open: showing it again would nest
     # the session inside itself, one more detach to get out. q: makes the
     # session name a safe sh word whatever it contains.
     local show='; if [ #{q:session_name} = "$SESSION" ]; then tmux display-message "Already in this popup"; else tmux display-popup -w 90% -h 90% -b single -T " '"${key}"' " -E "tmux attach-session -t \"=$SESSION\""; fi'
+    # Pressed inside another dev popup: dev closes that one and opens this one
+    # in its place, never as a popup inside the popup.
+    local hop='if [ -n "#{?#{@dev_parent},1,}" ]; then exec zsh '"${(qq)DEV_SCRIPT}"' __hop '"${prefix}"' '"'"'#{client_name}'"'"' '"'"'#{session_id}'"'"'; fi; '
     if [[ "$display" == nodisplay ]]; then
         print -r -- "$create"
     else
-        print -r -- "${create}${show}"
+        print -r -- "${hop}${create}${show}"
     fi
+}
+
+# What each popup key runs: its command, then the suffix of its session name.
+_dev_popup_spec() {
+    case "$1" in
+        term) print -rl -- "${SHELL:-zsh}" "" ;;
+        ai) print -rl -- "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_agent_cfg ai_cmd)" ;;
+        kb) print -rl -- kb "" ;;
+        lg) print -rl -- lazygit "" ;;
+        *) return 1 ;;
+    esac
 }
 
 # The session-closed hook that reaps a closed session's popups. Pure sh and
@@ -1980,9 +2005,9 @@ _dev_bind_key() {
 }
 
 _dev_bind_popup() {
-    local key="$1" label="$2"
-    shift 2
-    _dev_bind_key "$key" "$label" run-shell "$(_dev_popup_script "$@")"
+    local key="$1" label="$2" prefix="$3"
+    local -a spec=("${(@f)$(_dev_popup_spec "$prefix")}")
+    _dev_bind_key "$key" "$label" run-shell "$(_dev_popup_script "$prefix" "${spec[1]}" "${spec[2]}")"
 }
 
 # Everything binding depends on. A new shell on an unchanged machine finds the
@@ -1990,7 +2015,7 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=7
+_DEV_BINDINGS_REV=8
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
@@ -2015,6 +2040,10 @@ _dev_setup_popup_keybindings() {
     # A fixed index, not -ga: -ga would append another reaper on every
     # rebind. Index 0, where a user's own hook lands, is left alone.
     tmux set-hook -g 'session-closed[99]' "$(_dev_reaper_hook)"
+    # A dev popup is one pane: a split or a window made in one, by any key or
+    # command, is undone at once. Its own keys open other popups in its place.
+    tmux set-hook -g 'after-split-window[98]' "if -F '#{@dev_parent}' 'kill-pane'"
+    tmux set-hook -g 'after-new-window[98]' "if -F '#{@dev_parent}' 'kill-window'"
     _dev_publish_config
 
     local -A wanted=(
@@ -2049,10 +2078,10 @@ _dev_setup_popup_keybindings() {
         seen+="${wanted[$name]} "
     done
 
-    [[ -n "${wanted[key_term]}" ]] && _dev_bind_popup "${wanted[key_term]}" Terminal term "${SHELL:-zsh}"
+    [[ -n "${wanted[key_term]}" ]] && _dev_bind_popup "${wanted[key_term]}" Terminal term
     if [[ -n "${wanted[key_agent]}" ]]; then
         if _dev_validate_ai_cmd; then
-            _dev_bind_popup "${wanted[key_agent]}" "AI assistant" ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)"
+            _dev_bind_popup "${wanted[key_agent]}" "AI assistant" ai
         else
             bind_status=1
         fi
@@ -2060,7 +2089,7 @@ _dev_setup_popup_keybindings() {
     [[ -n "${wanted[key_new]}" ]] && _dev_bind_key "${wanted[key_new]}" "New branch tab" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'New branch tab' 90% zsh ${(qq)DEV_SCRIPT} grid add --prompt"
     if [[ -n "${wanted[key_kb]}" ]] && _dev_has_command kb; then
-        _dev_bind_popup "${wanted[key_kb]}" "Kanban board" kb kb
+        _dev_bind_popup "${wanted[key_kb]}" "Kanban board" kb
     fi
     [[ -n "${wanted[key_coordinator]}" ]] && _dev_bind_key "${wanted[key_coordinator]}" "Coordinator" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __coordinator '#{pane_id}' '#{client_name}'"
@@ -2071,7 +2100,7 @@ _dev_setup_popup_keybindings() {
     [[ -n "${wanted[key_overview]}" ]] && _dev_bind_key "${wanted[key_overview]}" "Dashboard" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' dashboard 95% zsh ${(qq)DEV_SCRIPT} __dashboard '#{pane_id}' '#{client_name}'"
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then
-        _dev_bind_popup "${wanted[key_git]}" "Git UI" lg lazygit
+        _dev_bind_popup "${wanted[key_git]}" "Git UI" lg
     fi
     # The digits follow context: in a tab they select a tab, as tmux's own do;
     # in an agent popup or the coordinator they open that tab's agent. The
@@ -2219,7 +2248,8 @@ _dev_agent_start() {
         _dev_text_set -w -t "$target" @dev_agent_args "${(j: :)${(qq)extra[@]}}"
     fi
     local pane="$(tmux display-message -p -t "$target" '#{pane_id}')"
-    tmux run-shell -t "$pane" "$(_dev_popup_script ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)" nodisplay)"
+    local -a spec=("${(@f)$(_dev_popup_spec ai)}")
+    tmux run-shell -t "$pane" "$(_dev_popup_script ai "${spec[1]}" "${spec[2]}" nodisplay)"
     tmux set-option -w -t "$target" @dev_agent_started 1
 
     # A launcher that fails ends the session at once. Say so: a dead agent
@@ -2616,6 +2646,13 @@ _dev_coordinator() {
         _dev_tell "$client" "Already in the coordinator"
         return 0
     fi
+    # From a key in another popup (a client to move); a call with no client
+    # has no popup to close and just finds the grid's coordinator.
+    local here="$(tmux display-message -p -t "$pane" '#{session_id}')"
+    if [[ -n "$client" && -n "$(tmux show-options -t "$here" -qv @dev_parent)" ]]; then
+        _dev_reopen "$client" "$here" "$pane" __coordinator "$pane" "$client"
+        return
+    fi
     # new-session is the lock: of two presses at once, one fails as a
     # duplicate and simply opens what the other made.
     if tmux new-session -d -s "$name" -c "$repo" -e "DEV_GRID=${repo}" 2>/dev/null; then
@@ -2815,9 +2852,24 @@ _dev_dashboard() {
 _dev_dialog() {
     local client="$1" pane="$2" title="$3" size="$4"
     shift 4
+    local here="$(tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null)"
+    if [[ -n "$client" && -n "$(tmux show-options -t "$here" -qv @dev_parent 2>/dev/null)" ]]; then
+        if [[ "$(_dev_text_get -w -t "${here}:" @dev_dialog)" == "$title" ]]; then
+            _dev_tell "$client" "Already in this popup"
+            return 0
+        fi
+        _dev_reopen "$client" "$here" "$pane" __dialog "$client" "$pane" "$title" "$size" "$@"
+        return
+    fi
     local name="dlg-$$" dir
     dir="$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)"
     tmux new-session -d -s "$name" -c "${dir:-$HOME}" "$@" || return 1
+    # Marked as a popup of the tab's session, like the others: the reaper
+    # closes it with the session, and a popup key pressed in it hops out.
+    tmux set-option -t "=${name}:" @dev_parent "$here"
+    tmux set-option -w -t "=${name}:" @dev_popup_kind dialog
+    tmux set-option -w -t "=${name}:" @dev_origin "$pane"
+    _dev_text_set -w -t "=${name}:" @dev_dialog "$title"
     tmux set-option -t "=${name}:" status off
     tmux set-hook -t "=${name}:" client-detached "kill-session -t '=${name}'"
     tmux display-popup -c "$client" -w "$size" -h "$size" -b single -T " ${title} " \
@@ -2831,7 +2883,8 @@ _dev_open_tab_agent() {
     tmux select-window -t "=${grid_session}:${index}" 2>/dev/null || return 1
     target_pane="$(tmux display-message -p -t "=${grid_session}:${index}" '#{pane_id}')"
     ws_id="$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_ws_id)"
-    tmux run-shell -t "$target_pane" "$(_dev_popup_script ai "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_cfg ai_cmd)" nodisplay)"
+    local -a spec=("${(@f)$(_dev_popup_spec ai)}")
+    tmux run-shell -t "$target_pane" "$(_dev_popup_script ai "${spec[1]}" "${spec[2]}" nodisplay)"
     session="$(_dev_agent_session_of "$ws_id")" || return 1
     [[ -n "$client" ]] && tmux run-shell -b "sleep 0.3; tmux display-popup -c ${(qq)client} -w 90% -h 90% -b single -T ' ${ws_id} ' -E \"tmux attach-session -t '=${session}'\""
     return 0
@@ -2872,6 +2925,73 @@ _dev_switch_agent() {
     fi
     tmux detach-client -t "$inner"
     _dev_open_tab_agent "$parent_name" "$index" "$outer"
+}
+
+# The client showing a popup and the tab pane it belongs to, as "client pane".
+# The client is the parent session's with the latest activity: the keys typed
+# into a popup arrive through it. The pane is the one the popup was opened
+# from, or the parent's current pane when that is gone or was never recorded.
+_dev_popup_host() {
+    local popup_session="$1" parent origin outer target
+    parent="$(tmux show-options -t "$popup_session" -qv @dev_parent)"
+    [[ -n "$parent" ]] && tmux has-session -t "$parent" 2>/dev/null || return 1
+    outer="$(tmux list-clients -t "$parent" -F '#{client_activity} #{client_name}' | sort -rn | head -1)"
+    outer="${outer#* }"
+    [[ -n "$outer" ]] || return 1
+    origin="$(tmux show-options -w -t "${popup_session}:" -qv @dev_origin)"
+    if _dev_pane_exists "$origin"; then
+        target="$origin"
+    else
+        target="$(tmux display-message -p -t "$parent" '#{pane_id}')"
+    fi
+    print -r -- "${outer} ${target}"
+}
+
+# Closes the popup a key was pressed in and runs `dev <args>` once it has
+# gone, for the client that showed it and the tab it belonged to: the inner
+# client and pane in the args are swapped for those. One popup cannot open
+# another, and a popup inside a popup takes a detach per level to leave.
+_dev_reopen() {
+    local inner="$1" popup_session="$2" pane="$3" host outer target arg
+    shift 3
+    if ! host="$(_dev_popup_host "$popup_session")"; then
+        _dev_tell "$inner" "This popup's tab is gone"
+        return 1
+    fi
+    outer="${host% *}" target="${host#* }"
+    local -a args=()
+    for arg in "$@"; do
+        case "$arg" in
+            "$inner") args+=("$outer") ;;
+            "$pane") args+=("$target") ;;
+            *) args+=("$arg") ;;
+        esac
+    done
+    tmux detach-client -t "$inner"
+    tmux run-shell -b "sleep 0.3; zsh ${(qq)DEV_SCRIPT} ${(j: :)${(@qq)args}}"
+}
+
+# A popup key (terminal, agent, git, kb) pressed inside another dev popup.
+_dev_hop() {
+    local prefix="$1" inner="$2" popup_session="$3"
+    if [[ "$(tmux show-options -w -t "${popup_session}:" -qv @dev_popup_kind)" == "$prefix" ]]; then
+        _dev_tell "$inner" "Already in this popup"
+        return 0
+    fi
+    _dev_reopen "$inner" "$popup_session" "{pane}" __popup "$prefix" "$inner" "{pane}"
+}
+
+# Opens a popup key's popup for a pane, in a given client: what the key does
+# in that pane, without a key press to carry the client.
+_dev_popup_open() {
+    local prefix="$1" client="$2" pane="$3" key session
+    local -a spec=("${(@f)$(_dev_popup_spec "$prefix")}")
+    (( ${#spec} )) || return 1
+    tmux run-shell -t "$pane" "$(_dev_popup_script "$prefix" "${spec[1]}" "${spec[2]}" nodisplay)"
+    key="$(tmux display-message -p -t "$pane" "$(_dev_popup_key_format)")"
+    session="${prefix}-${key}${spec[2]:+-${spec[2]}}"
+    tmux display-popup -c "$client" -w 90% -h 90% -b single -T " ${key} " \
+        -E "tmux attach-session -t '=${session}'"
 }
 
 # Run directly if executed (not sourced), set up keybindings if sourced

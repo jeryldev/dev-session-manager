@@ -318,6 +318,12 @@ Use `dev reload` to refresh keybindings after installing a new tool.
   the dashboard and the `prefix + N`/`X` prompts included; those three also close with Ctrl-C (in
   the other popups Ctrl-C belongs to the program, e.g. it interrupts Claude)
 - **Reopen**: same keybinding resumes exactly where you left off
+- **One at a time**: a dev popup key pressed inside a dev popup closes it and opens the new one in
+  its place, for the same tab: `prefix + O` in an agent shows the dashboard, `prefix + a` in the
+  dashboard shows the agent. A popup never opens inside another, so one `prefix + d` always gets
+  you out. The key of the popup you are in says "Already in this popup"
+- **One pane**: a dev popup holds its tool and nothing else; a split or a new window made inside
+  one is undone at once
 - **Which board kb opens**: popups start in the window's folder (a grid tab's worktree), so kb
   opens the board named after that folder or its git repository, worktrees included (kb 0.4+)
 

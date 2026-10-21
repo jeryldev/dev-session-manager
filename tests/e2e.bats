@@ -309,3 +309,91 @@ dialog_closes() {
     until_true '[ "$(others | wc -l | tr -d " ")" = 1 ]'
     [ "$(tmux display-message -p -t "=$(others):" '#{pane_current_path}')" = "$(cd "$CODE/myrepo-feat" && pwd -P)" ]
 }
+
+
+# One popup at a time: a dev popup key pressed inside a dev popup closes it
+# and opens the new one in its place, for the tab the first one belonged to,
+# never as a popup inside the popup.
+
+# Tab 2's agent, open in its popup.
+open_agent_of_tab2() {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    WS="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${WS}")" = 1 ]'
+}
+
+# Every client but the grid's: one per popup showing. A popup inside a popup
+# is a client attached from inside another.
+popup_clients() { tmux list-clients -F '#{session_name}' | grep -cv '^dev-myrepo-grid$'; }
+
+@test "prefix O inside an agent closes it and opens the dashboard for its tab" {
+    open_agent_of_tab2
+    press "$PREFIX" O
+    until_true '[ "$(attached dlg-)" = 1 ]'
+    until_true '[ "$(attached "ai-${WS}")" = 0 ]'
+    tmux has-session -t "=ai-${WS}-claude"
+    until_true 'grep -aq "▶2 myrepo-feat" "$SCREEN"'
+    [ "$(popup_clients)" = 1 ]
+}
+
+@test "the terminal key inside an agent swaps it for that tab's terminal" {
+    open_agent_of_tab2
+    press "$PREFIX" j
+    until_true '[ "$(attached term-)" = 1 ]'
+    until_true '[ "$(attached "ai-${WS}")" = 0 ]'
+    [ "$(tmux show-options -w -t "=$(tmux list-sessions -F '#{session_name}' | grep '^term-'):" -v @dev_ws_id)" = "$WS" ]
+    [ "$(popup_clients)" = 1 ]
+}
+
+@test "prefix S inside an agent swaps it for the coordinator" {
+    open_agent_of_tab2
+    press "$PREFIX" S
+    until_true '[ "$(attached coord-myrepo-grid)" = 1 ]'
+    until_true '[ "$(attached "ai-${WS}")" = 0 ]'
+    [ "$(popup_clients)" = 1 ]
+}
+
+@test "prefix a inside the dashboard closes it and opens the agent of its tab" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" O
+    until_true '[ "$(attached dlg-)" = 1 ]'
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    until_true '[ -z "$(tmux list-sessions -F "#{session_name}" | grep "^dlg-")" ]'
+    [ "$(popup_clients)" = 1 ]
+}
+
+@test "prefix N inside an agent asks in the directory of the agent's tab" {
+    open_agent_of_tab2
+    press "$PREFIX" N
+    until_true '[ "$(attached dlg-)" = 1 ]'
+    until_true '[ "$(attached "ai-${WS}")" = 0 ]'
+    local dlg; dlg="$(tmux list-sessions -F '#{session_name}' | grep '^dlg-')"
+    [ "$(tmux display-message -p -t "=${dlg}:" '#{pane_current_path}')" = "$(cd "$CODE/myrepo-feat" && pwd -P)" ]
+}
+
+@test "the dashboard key inside the dashboard keeps the one dashboard" {
+    press "$PREFIX" O
+    until_true '[ "$(attached dlg-)" = 1 ]'
+    local dlg; dlg="$(tmux list-sessions -F '#{session_name}' | grep '^dlg-')"
+    press "$PREFIX" O
+    sleep 1
+    [ "$(tmux list-sessions -F '#{session_name}' | grep '^dlg-')" = "$dlg" ]
+    [ "$(attached dlg-)" = 1 ]
+    [ "$(popup_clients)" = 1 ]
+}
+
+@test "a split pressed inside a popup is undone, and in a tab it is kept" {
+    open_agent_of_tab2
+    press "$PREFIX" %
+    sleep 1
+    [ "$(tmux list-panes -s -t "=ai-${WS}-claude" | wc -l | tr -d ' ')" = 1 ]
+    press "$PREFIX" d
+    until_true '[ "$(attached "ai-${WS}")" = 0 ]'
+    press "$PREFIX" %
+    until_true '[ "$(tmux list-panes -t "=dev-myrepo-grid:2" | wc -l | tr -d " ")" = 2 ]'
+}

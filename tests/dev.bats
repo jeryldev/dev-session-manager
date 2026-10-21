@@ -241,8 +241,10 @@ assert_default_windows() {
 # Open a popup the way its key does: run-shell expands the #{...} formats in
 # the context of the session it targets. display-popup itself fails without a
 # client, after the popup session already exists — which is all these need.
+# Creates the session a popup key makes, as nodisplay does: there is no client
+# here to show it. Inside another popup that is how older versions nested them.
 open_popup() {
-    local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script $2 '$3'" </dev/null)"
+    local script; script="$(zsh -c "source '$DEV_ZSH' 2>/dev/null; _dev_popup_script $2 '$3' '' nodisplay" </dev/null)"
     tmux run-shell -t "$1" "$script" 2>/dev/null || true
 }
 

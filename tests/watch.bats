@@ -35,9 +35,11 @@ start_agent_showing() {
 # is blank until its program prints, and a poll that lands there reads
 # "unknown" (more often on a loaded machine).
 switch_to() {
-    local old next i
+    local old next i size
     old="$(tmux display-message -p -t "=${AGENT}:" '#{pane_id}')"
-    next="$(tmux new-window -d -P -F '#{pane_id}' -t "=${AGENT}:" "$(show "$1")")"
+    size="$(tmux display-message -p -t "$old" '#{pane_width} #{pane_height}')"
+    # A session of its own: dev undoes a window opened inside a popup's.
+    next="$(tmux new-session -d -P -F '#{pane_id}' -s "next-$RANDOM" -x "${size% *}" -y "${size#* }" "$(show "$1")")"
     for i in $(seq 1 75); do
         [ -n "$(tmux capture-pane -p -t "$next" | tr -d '[:space:]')" ] && break
         sleep 0.2
