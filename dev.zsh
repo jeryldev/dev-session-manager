@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="3.3.0"
+DEV_VERSION="3.3.1"
 
 # This file, sourced or executed: key bindings run it again from tmux. Made
 # absolute but not resolved: Homebrew's bin/dev is a symlink into a versioned
@@ -2399,24 +2399,38 @@ _dev_json_str() {
 # One row per workspace tab, "index|label|path|branch|changes|agent|ctx|detail",
 # shared by status and watch so they can never disagree.
 _dev_agent_rows() {
-    local row window_id index name workspace ws_id started branch changes agent detail ctx session screen us=$'\x1f'
-    for row in ${(f)"$(_dev_window_table "$grid_session")"}; do
-        IFS="$us" read -r window_id index workspace ws_id started name <<< "$row"
-        [[ -n "$workspace" ]] || continue
-        _dev_workspace_git "$workspace"
-        detail="" ctx=""
-        if session="$(_dev_agent_session_of "$ws_id")"; then
-            screen="$(tmux capture-pane -p -t "=${session}:" 2>/dev/null)"
-            agent="$(print -r -- "$screen" | _dev_agent_screen_state)"
-            ctx="$(print -r -- "$screen" | _dev_agent_screen_ctx)"
-            [[ "$agent" == waiting ]] && detail="$(print -r -- "$screen" | _dev_agent_screen_question)"
-        elif [[ "$started" == 1 ]]; then
-            agent=dead
-        else
-            agent=none
-        fi
-        print -r -- "${index}${us}${name}${us}${workspace}${us}${branch}${us}${changes}${us}${agent}${us}${ctx}${us}${detail}"
+    # Each tab's git status and agent screen are read at once rather than in
+    # turn: on a large repo each git status alone is a tenth of a second.
+    # Pipes rather than temp files, so a dashboard closed mid-read leaves
+    # nothing behind.
+    local -a table=(${(f)"$(_dev_window_table "$grid_session")"}) fds=()
+    local row fd
+    for row in "${table[@]}"; do
+        exec {fd}< <(_dev_agent_row "$row")
+        fds+=($fd)
     done
+    for fd in "${fds[@]}"; do
+        cat <&$fd
+        exec {fd}<&-
+    done
+}
+
+_dev_agent_row() {
+    local window_id index name workspace ws_id started branch changes agent detail ctx session screen us=$'\x1f'
+    IFS="$us" read -r window_id index workspace ws_id started name <<< "$1"
+    [[ -n "$workspace" ]] || return 0
+    _dev_workspace_git "$workspace"
+    if session="$(_dev_agent_session_of "$ws_id")"; then
+        screen="$(tmux capture-pane -p -t "=${session}:" 2>/dev/null)"
+        agent="$(print -r -- "$screen" | _dev_agent_screen_state)"
+        ctx="$(print -r -- "$screen" | _dev_agent_screen_ctx)"
+        [[ "$agent" == waiting ]] && detail="$(print -r -- "$screen" | _dev_agent_screen_question)"
+    elif [[ "$started" == 1 ]]; then
+        agent=dead
+    else
+        agent=none
+    fi
+    print -r -- "${index}${us}${name}${us}${workspace}${us}${branch}${us}${changes}${us}${agent}${us}${ctx}${us}${detail}"
 }
 
 _dev_agent_status() {
@@ -2657,7 +2671,14 @@ _dev_dashboard_frame() {
     local LC_ALL="$LC_ALL"
     _dev_utf8_locale
     local grid_session="$1" width="${2:-100}" selected="${3:-0}" us=$'\x1f'
-    local -a rows=(${(f)"$(_dev_agent_rows)"})
+    # Rows the caller already read, so a key press redraws without reading
+    # every worktree again.
+    local -a rows
+    if (( $# >= 4 )); then
+        rows=(${(f)4})
+    else
+        rows=(${(f)"$(_dev_agent_rows)"})
+    fi
     local row index name workspace branch changes agent ctx detail running=0 name_w=0
     for row in "${rows[@]}"; do
         IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
@@ -2742,17 +2763,24 @@ _dev_dashboard() {
         return 0
     fi
     local selected="$(tmux display-message -p -t "$pane" '#{window_index}' 2>/dev/null)"
-    local key action n size width
-    print -n $'\e[?25l'
+    local key action n size width rows screen fetched=-1 nl=$'\n' eol=$'\e[K\n'
+    # Each frame is drawn over the last one, never after clearing the screen:
+    # reading the grid takes long enough that a cleared screen shows as a
+    # blank flash on every refresh.
+    print -rn -- $'\e[?25l\e[H\e[J Reading the grid…'
     {
         while true; do
             size="$(stty size </dev/tty 2>/dev/null)"
             width="${size##* }"
             [[ "$width" == <-> ]] || width=100
-            print -n $'\e[H\e[2J'
-            _dev_dashboard_frame "$grid_session" "$width" "$selected"
+            if (( fetched < 0 || SECONDS - fetched >= 2 )); then
+                rows="$(_dev_agent_rows)"
+                fetched=$SECONDS
+            fi
+            screen="$(_dev_dashboard_frame "$grid_session" "$width" "$selected" "$rows")"
+            print -rn -- $'\e[H'"${screen//$nl/$eol}"$'\e[K\e[J'
             key=""
-            read -s -k 1 -t 2 key </dev/tty 2>/dev/null
+            read -s -k 1 -t 2 key </dev/tty 2>/dev/null || fetched=-1
             action="$(_dev_dashboard_key "$key" "$selected")"
             n="${action##* }"
             case "$action" in
@@ -2769,6 +2797,7 @@ _dev_dashboard() {
                     ;;
                 start\ *)
                     (cd "$repo" && DEV_GRID="$repo" _dev_agent_start "$n") &>/dev/null
+                    fetched=-1
                     ;;
                 quit) return 0 ;;
             esac

@@ -121,3 +121,66 @@ for line in sys.stdin.buffer.read().decode("utf-8").splitlines():
     local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "O"')"
     [[ "$binding" == *"run-shell"* && "$binding" == *"__dashboard"* && "$binding" == *"#{pane_id}"* ]]
 }
+
+# Clearing the screen before a frame left the popup blank for as long as the
+# frame took to gather (a second or more with real worktrees), every refresh.
+@test "a refresh draws over the last frame instead of clearing the screen" {
+    local raw="$BATS_TEST_TMPDIR/raw" pane
+    pane="$(tmux new-window -d -P -F '#{pane_id}' -t '=dev-myrepo-grid:' \
+        "sleep 1; exec zsh $DEV_ZSH __dashboard $(pane_of '=dev-myrepo-grid:1') ''")"
+    tmux pipe-pane -O -t "$pane" "cat >> $raw"
+    local i
+    for i in $(seq 1 75); do
+        [ "$(grep -o 'dev-myrepo-grid ·' "$raw" 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ] && break
+        sleep 0.2
+    done
+    [ "$(grep -o 'dev-myrepo-grid ·' "$raw" | wc -l | tr -d ' ')" -ge 2 ]
+    run grep -c $'\e\\[2J' "$raw"
+    [ "$output" = 0 ]
+    grep -q $'\e\\[H' "$raw"
+    grep -q $'\e\\[J' "$raw"
+    # And what it draws is the frame, line for line from the left edge.
+    tmux capture-pane -p -t "$pane" > "$BATS_TEST_TMPDIR/screen"
+    [[ "$(sed -n 1p "$BATS_TEST_TMPDIR/screen")" == " dev-myrepo-grid · "* ]]
+    [[ "$(sed -n 3p "$BATS_TEST_TMPDIR/screen")" == " ◇ coordinator · "* ]]
+    run grep -F "\$'" "$BATS_TEST_TMPDIR/screen"
+    [ "$status" -eq 1 ]
+}
+
+# A git that takes a second for every call, so reading the grid is slow
+# enough to tell apart from drawing it.
+slow_git() {
+    local real; real="$(command -v git)"
+    mkdir -p "$BATS_TEST_TMPDIR/slow-bin"
+    printf '#!/bin/sh\nsleep 1\nexec %s "$@"\n' "$real" > "$BATS_TEST_TMPDIR/slow-bin/git"
+    chmod +x "$BATS_TEST_TMPDIR/slow-bin/git"
+    echo "$BATS_TEST_TMPDIR/slow-bin:$PATH"
+}
+
+@test "the tabs are read at the same time, not one after another" {
+    local path; path="$(slow_git)"
+    local start=$SECONDS
+    run env PATH="$path" zsh -c 'source "$1" 2>/dev/null; grid_session=dev-myrepo-grid; _dev_agent_rows' _ "$DEV_ZSH" </dev/null
+    # Three tabs, two git calls each: six seconds in turn, two at once.
+    (( SECONDS - start < 4 ))
+    [ "$(printf '%s\n' "$output" | cut -d$'\x1f' -f1 | tr '\n' ' ')" = "1 2 3 " ]
+}
+
+@test "a digit redraws at once, without reading the grid again" {
+    local path pane; path="$(slow_git)"
+    pane="$(tmux new-window -d -P -F '#{pane_id}' -t '=dev-myrepo-grid:' \
+        "exec env PATH='$path' zsh $DEV_ZSH __dashboard $(pane_of '=dev-myrepo-grid:1') ''")"
+    local i
+    for i in $(seq 1 75); do
+        tmux capture-pane -p -t "$pane" | grep -q '▶1' && break
+        sleep 0.2
+    done
+    tmux capture-pane -p -t "$pane" | grep -q '▶1'
+    tmux send-keys -t "$pane" 3
+    # Reading the grid takes two seconds here; the new selection must not.
+    for i in $(seq 1 6); do
+        tmux capture-pane -p -t "$pane" | grep -q '▶3' && break
+        sleep 0.2
+    done
+    tmux capture-pane -p -t "$pane" | grep -q '▶3'
+}
