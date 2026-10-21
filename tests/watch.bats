@@ -30,9 +30,20 @@ start_agent_showing() {
     AGENT="$(tmux list-windows -a -F '#{session_name}|#{@dev_popup_kind}' | awk -F'|' '$2 == "ai" {print $1}')"
 }
 
-# The agent's screen changes as a real one would.
+# The agent's screen changes as a real one would: all at once. The new screen
+# is drawn in a pane of its own and then swapped in, because a restarted pane
+# is blank until its program prints, and a poll that lands there reads
+# "unknown" (more often on a loaded machine).
 switch_to() {
-    tmux respawn-pane -k -t "=${AGENT}:" "$(show "$1")"
+    local old next i
+    old="$(tmux display-message -p -t "=${AGENT}:" '#{pane_id}')"
+    next="$(tmux new-window -d -P -F '#{pane_id}' -t "=${AGENT}:" "$(show "$1")")"
+    for i in $(seq 1 75); do
+        [ -n "$(tmux capture-pane -p -t "$next" | tr -d '[:space:]')" ] && break
+        sleep 0.2
+    done
+    tmux swap-pane -d -s "$next" -t "$old"
+    tmux kill-pane -t "$old"
 }
 
 # Runs the watch in the background for a bounded time; output to $OUT.
