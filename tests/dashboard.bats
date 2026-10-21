@@ -58,7 +58,11 @@ frame() {
     frame 120
     [[ "$(grep -m1 coordinator <<< "$output")" == *"◇ coordinator · ○ not started (prefix S)"* ]]
     # The coordinator's agent reads its launcher from the server, as published.
-    DEV_AGENT_LAUNCH_CMD="$(show claude-2.1.286-working.txt)" zsh -c 'source "$1" 2>/dev/null; _dev_publish_config' _ "$DEV_ZSH" </dev/null
+    # Exported for the rest of the test: loading dev publishes its settings
+    # again, and a frame loaded without it would take the launcher back
+    # before a slow machine has started the coordinator.
+    export DEV_AGENT_LAUNCH_CMD="$(show claude-2.1.286-working.txt)"
+    zsh -c 'source "$1" 2>/dev/null; _dev_publish_config' _ "$DEV_ZSH" </dev/null
     zsh "$DEV_ZSH" __coordinator "$(pane_of '=dev-myrepo-grid:1')" "" </dev/null 2>/dev/null
     local i
     for i in $(seq 1 50); do
