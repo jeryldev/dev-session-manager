@@ -8,7 +8,7 @@
 # Repository: https://github.com/jeryldev/dev-session-manager
 
 # Version
-DEV_VERSION="3.3.1"
+DEV_VERSION="3.4.0"
 
 # This file, sourced or executed: key bindings run it again from tmux. Made
 # absolute but not resolved: Homebrew's bin/dev is a symlink into a versioned
