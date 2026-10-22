@@ -86,8 +86,9 @@ path_with() {
     # resolving to the developer's live server. Killing that server on the way
     # to reporting the failure costs every session the developer had open, which
     # is a worse outcome than the bug being guarded against.
-    local decoy="$BATS_TEST_TMPDIR/decoy"
-    mkdir -p "$decoy"
+    # Under /tmp: a socket path is capped at 104 bytes on macOS, and the
+    # bats temp path, with its test number, comes close on its own.
+    local decoy; decoy="$(mktemp -d /tmp/dev-decoy.XXXXXX)"
     TMUX_TMPDIR="$decoy" tmux -f /dev/null new-session -d -s decoy-session
     local decoy_sock
     decoy_sock="$(TMUX_TMPDIR="$decoy" tmux display-message -p '#{socket_path}')"
@@ -112,6 +113,7 @@ path_with() {
     [ "$status" -eq 0 ]
 
     TMUX_TMPDIR="$decoy" tmux kill-server 2>/dev/null || true
+    rm -rf "$decoy"
 }
 
 # ─── B8: advertised window numbers must exist (US-1) ───
@@ -847,6 +849,7 @@ sys.exit(proc.wait())
     [[ "$output" == *"Terminal popup"* ]]
     [[ "$output" == *"Prefix N"*"New branch as a grid tab"* ]]
     [[ "$output" == *"Prefix X"*"Remove this tab's worktree"* ]]
+    [[ "$output" == *"Prefix W"*"Close this tab, keep its worktree"* ]]
     [[ "$output" == *"Prefix S"*"coordinator agent"* ]]
     [[ "$output" == *"Prefix O"*"Dashboard"* ]]
 }
