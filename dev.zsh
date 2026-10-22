@@ -1011,23 +1011,14 @@ _dev_grid_prune() {
         echo -e "${GREEN}✓ Nothing to prune${NC}"
         return 0
     fi
-    local entry window_id index workspace ws_id sid parent popup_ws rc=0
+    local entry window_id index workspace rc=0
     for entry in "${removed[@]}"; do
         IFS="$us" read -r window_id index workspace <<< "$entry"
         if (( dry_run )); then
             echo "  would remove tab ${index} (${workspace:t})"
             continue
         fi
-        # By window id: with renumber-windows on, closing one tab renumbers
-        # the rest, and an index taken earlier would hit a live tab.
-        ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
-        if [[ -n "$ws_id" ]]; then
-            tmux list-windows -a -F '#{session_id}|#{@dev_parent}|#{@dev_ws_id}' |
-                while IFS='|' read -r sid parent popup_ws; do
-                    [[ -n "$parent" && "$popup_ws" == "$ws_id" ]] && tmux kill-session -t "$sid" 2>/dev/null
-                done
-        fi
-        if tmux kill-window -t "$window_id"; then
+        if _dev_close_tab "$window_id"; then
             echo -e "${GREEN}✓ Removed tab ${index} (${workspace:t})${NC}"
         else
             echo -e "${RED}✗ Could not remove tab ${index} (${workspace:t})${NC}"
@@ -1053,6 +1044,66 @@ _dev_grid_kill() {
     done
     tmux kill-session -t "$session_id"
     echo -e "${GREEN}✓ Killed ${grid_session} (and $(_dev_plural ${#popups} popup))${NC}"
+}
+
+# The popup sessions of a tab, by the workspace id its popups carry.
+_dev_tab_popups() {
+    local ws_id="$(tmux show-options -w -t "$1" -qv @dev_ws_id)" sid parent popup_ws
+    [[ -n "$ws_id" ]] || return 0
+    tmux list-windows -a -F '#{session_id}|#{@dev_parent}|#{@dev_ws_id}' |
+        while IFS='|' read -r sid parent popup_ws; do
+            [[ -n "$parent" && "$popup_ws" == "$ws_id" ]] && print -r -- "$sid"
+        done | sort -u
+}
+
+# Closes a tab and its popups. By window id: with renumber-windows on, closing
+# one tab renumbers the rest, and an index taken earlier would hit a live tab.
+_dev_close_tab() {
+    local window_id="$1" sid
+    for sid in ${(f)"$(_dev_tab_popups "$window_id")"}; do
+        tmux kill-session -t "$sid" 2>/dev/null
+    done
+    tmux kill-window -t "$window_id"
+}
+
+# Closes a tab and its popups but keeps its worktree, files and branch, so
+# `dev grid sync` opens it again. An agent running in its popup stops.
+_dev_grid_close() {
+    local ws="" dry_run=0
+    while (( $# )); do
+        case "$1" in
+            --dry-run) dry_run=1; shift ;;
+            -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            *) ws="$1"; shift ;;
+        esac
+    done
+    local repo grid_session index
+    _dev_agent_grid || return 1
+    index="$(_dev_grid_pick_tab "$ws" "close <tab|label|path> [--dry-run]")" || return 1
+    local window_id="$(tmux display-message -p -t "=${grid_session}:${index}" '#{window_id}')"
+    local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
+    local -a popups=(${(f)"$(_dev_tab_popups "$window_id")"})
+    if (( dry_run )); then
+        print -r -- "  would close tab ${index} (${label}) and $(_dev_plural ${#popups} popup); the worktree is kept"
+        return 0
+    fi
+    # Printed first: run in the tab it closes, dev goes with it.
+    echo -e "${GREEN}✓ Closed tab ${index} (${label}); its worktree is kept, and 'dev grid sync' opens it again${NC}"
+    _dev_close_tab "$window_id"
+}
+
+# The tab a grid command acts on: the one named, or else the tab it is run in.
+# Reads grid_session from the caller.
+_dev_grid_pick_tab() {
+    local ws="$1" usage="$2"
+    if [[ -n "$ws" ]]; then
+        _dev_agent_resolve "$ws"
+    elif [[ -n "$TMUX_PANE" && "$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}')" == "$grid_session" ]]; then
+        tmux display-message -p -t "$TMUX_PANE" '#{window_index}'
+    else
+        echo -e "${RED}Usage: dev grid ${usage}${NC}" >&2
+        return 1
+    fi
 }
 
 # Removes a workspace: its worktree (through worktree_remove_cmd if set, which
@@ -1084,21 +1135,11 @@ _dev_grid_remove() {
         index="$(tmux display-message -p -t "$pane" '#{window_index}')"
     else
         _dev_agent_grid || return 1
-        if [[ -z "$ws" ]]; then
-            if [[ -n "$TMUX_PANE" && "$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}')" == "$grid_session" ]]; then
-                index="$(tmux display-message -p -t "$TMUX_PANE" '#{window_index}')"
-            else
-                echo -e "${RED}Usage: dev grid remove <tab|label|path> [--force] [--dry-run] [--yes]${NC}"
-                return 1
-            fi
-        else
-            index="$(_dev_agent_resolve "$ws")" || return 1
-        fi
+        index="$(_dev_grid_pick_tab "$ws" "remove <tab|label|path> [--force] [--dry-run] [--yes]")" || return 1
     fi
 
     local window_id="$(tmux display-message -p -t "=${grid_session}:${index}" '#{window_id}')"
     local workspace="$(_dev_text_get -w -t "$window_id" @dev_workspace)"
-    local ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
     local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
     if [[ -z "$workspace" ]]; then
         echo -e "${RED}Error: tab ${index} is not a workspace${NC}"
@@ -1179,14 +1220,7 @@ _dev_grid_remove() {
     fi
 
     # The worktree is gone: its popups and tab go with it.
-    local sid parent popup_ws
-    if [[ -n "$ws_id" ]]; then
-        tmux list-windows -a -F '#{session_id}|#{@dev_parent}|#{@dev_ws_id}' |
-            while IFS='|' read -r sid parent popup_ws; do
-                [[ -n "$parent" && "$popup_ws" == "$ws_id" ]] && tmux kill-session -t "$sid" 2>/dev/null
-            done
-    fi
-    tmux kill-window -t "$window_id"
+    _dev_close_tab "$window_id"
     echo -e "${GREEN}✓ Removed tab ${index} (${label})${NC}"
 }
 
@@ -1272,6 +1306,7 @@ dev() {
             echo -e "                     (--filter <text>  --limit <1-9>  --session <name>)"
             echo -e "  ${BLUE}dev grid status${NC}    Each tab's branch and changes"
             echo -e "  ${BLUE}dev grid add <br>${NC}  New worktree for a branch, as a new tab"
+            echo -e "  ${BLUE}dev grid close <t>${NC}  Close tab t and its popups; keep its worktree"
             echo -e "  ${BLUE}dev grid remove <t>${NC} Delete tab t's worktree, close the tab (asks first)"
             echo -e "  ${BLUE}dev grid sync${NC}      Add tabs for new worktrees (--dry-run)"
             echo -e "  ${BLUE}dev grid prune${NC}     Remove tabs of removed worktrees (--dry-run)"
@@ -1433,6 +1468,7 @@ dev() {
                 sync) _dev_grid_sync "$3" ;;
                 prune) _dev_grid_prune "$3" ;;
                 kill) _dev_grid_kill "$3" ;;
+                close) shift 2; _dev_grid_close "$@" ;;
                 remove)
                     shift 2
                     if [[ "$1" == --pane && "$#" -eq 2 ]]; then
@@ -1444,7 +1480,7 @@ dev() {
                 add) _dev_grid_add "$3" ;;
                 *)
                     echo -e "${RED}Unknown grid command: $2${NC}"
-                    echo -e "${YELLOW}Usage: dev grid [status | add <branch> | remove [<tab>] | sync | prune | kill] [--dry-run]${NC}"
+                    echo -e "${YELLOW}Usage: dev grid [status | add <branch> | close [<tab>] | remove [<tab>] | sync | prune | kill] [--dry-run]${NC}"
                     return 1
                     ;;
             esac

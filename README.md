@@ -99,11 +99,16 @@ When you add or remove worktrees outside dev, re-entering the grid tells you; no
 you ask:
 
 ```bash
+dev grid close 3        # close tab 3 and its popups; its worktree is kept
 dev grid remove 3       # delete tab 3's worktree and close the tab (asks first; branch kept)
 dev grid sync           # a tab for each new worktree; existing tab numbers never change
 dev grid prune          # close the tabs (and popups) of worktrees that were removed
 dev grid kill           # close the whole grid; each takes --dry-run
 ```
+
+`dev grid close` (with no tab: the one it is run in) is for a worktree you are not using right now. An
+agent running in its popup stops, and `dev grid sync` brings the tab back. Closing a tab with tmux's
+own `prefix + &` leaves its popups running; `dev clean` removes them.
 
 ### Agents in a grid
 

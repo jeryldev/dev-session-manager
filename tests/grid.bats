@@ -1280,3 +1280,75 @@ answer_remove() {
     [ "$status" -ne 0 ]
     [ -f "$CODE/myrepo-feat/unsaved.txt" ]
 }
+
+# ─── dev grid close ───
+
+close_cmd() {
+    local dir="$1"; shift
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid close "$@"' _ "$dir" "$DEV_ZSH" "$@" </dev/null
+}
+
+# A popup session of tab $1 of the myrepo grid, as dev marks one.
+tab_popup() {
+    local id; id="$(tmux show-options -w -t "=dev-myrepo-grid:$1" -v @dev_ws_id)"
+    tmux new-session -d -s "term-$id" "sleep 300"
+    tmux set-option -t "=term-$id:" @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    tmux set-option -w -t "=term-$id:" @dev_ws_id "$id"
+    printf '%s' "term-$id"
+}
+
+@test "close closes a tab and its popups, and keeps its worktree" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    git -C "$repo" worktree add -q -b keep "$CODE/myrepo-keep"
+    run_grid "$repo"
+    local popup; popup="$(tab_popup 2)"
+    close_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n3 myrepo-keep' ]
+    ! tmux has-session -t "=$popup" 2>/dev/null
+    [ -d "$CODE/myrepo-feat" ]
+    git -C "$repo" worktree list | grep -q "myrepo-feat"
+    [[ "$output" == *"dev grid sync"* ]]
+}
+
+@test "a closed tab comes back with sync" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    close_cmd "$repo" myrepo-feat
+    [ "$status" -eq 0 ]
+    grid_cmd "$repo" sync
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "close --dry-run changes nothing" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local popup; popup="$(tab_popup 2)"
+    close_cmd "$repo" 2 --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"would close tab 2 (myrepo-feat) and 1 popup"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+    tmux has-session -t "=$popup"
+}
+
+@test "close with no tab closes the tab it is run in" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run env TMUX_PANE="$pane" zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid close' _ "$CODE/myrepo-feat" "$DEV_ZSH" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+    [ -d "$CODE/myrepo-feat" ]
+}
+
+@test "close with no tab outside tmux prints its usage" {
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    close_cmd "$repo"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Usage: dev grid close"* ]]
+}
