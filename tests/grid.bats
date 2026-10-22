@@ -1247,6 +1247,24 @@ answer_remove() {
     [[ "$binding" == *"__dialog"* && "$binding" == *"grid remove --pane"* ]]
 }
 
+@test "prefix W closes the tab it was pressed in" {
+    start_isolated_server
+    zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
+    local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "W"')"
+    [[ "$binding" == *"__dialog"* && "$binding" == *"grid close --pane"* ]]
+}
+
+@test "close --pane acts on the tab that pane is in" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run zsh -c 'cd / && source "$1" 2>/dev/null; dev grid close --pane "$2"' _ "$DEV_ZSH" "$pane" </dev/null
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+    [ -d "$CODE/myrepo-feat" ]
+}
+
 @test "remove --pane acts on the tab that pane is in" {
     local repo; repo="$(make_repo)"
     git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"

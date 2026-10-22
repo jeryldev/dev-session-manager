@@ -106,8 +106,9 @@ dev grid prune          # close the tabs (and popups) of worktrees that were rem
 dev grid kill           # close the whole grid; each takes --dry-run
 ```
 
-`dev grid close` (with no tab: the one it is run in) is for a worktree you are not using right now. An
-agent running in its popup stops, and `dev grid sync` brings the tab back. Closing a tab with tmux's
+`dev grid close` (with no tab: the one it is run in; `prefix + W` in the tab) is for a worktree you
+are not using right now, and `dev grid sync` brings the tab back. An agent that is working or waiting
+for an answer would stop mid-turn, so that tab needs a `y` first, or `--force` from a script. Closing a tab with tmux's
 own `prefix + &` leaves its popups running; `dev clean` removes them.
 
 ### Agents in a grid
@@ -293,6 +294,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
 | `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
+| `prefix + W` | Close this tab and its popups | keeps the worktree; asks first if its agent is busy |
 | `prefix + S` | The grid's coordinator agent | one per grid |
 | `prefix + O` | Dashboard: the grid as a tree of its agents | 1-9 select, Enter go, a open agent, q close |
 | `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | one key from agent to agent; a digit you bound yourself is left alone |
@@ -300,7 +302,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 All popups open at 90% x 90% with a single border.
 
 Every key is configurable (`dev config set key_agent V`; also `key_term`, `key_git`, `key_kb`,
-`key_new`, `key_coordinator`, `key_overview`, `key_remove`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
+`key_new`, `key_coordinator`, `key_overview`, `key_remove`, `key_close`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
 keys it skipped, and `dev help` marks them `not bound`.
 
 Two of tmux's own defaults are replaced, since they are not yours: `prefix + 1`-`9` (dev's digits
@@ -399,7 +401,7 @@ variable overrides the file for as long as it is set.
 | `ai_cmd` | `DEV_AI_CMD` | `claude` | AI tool for `prefix + a` (one word) |
 | `ai_args` | `DEV_AI_ARGS` | `--enable-auto-mode` for claude, none otherwise | Flags for the AI tool |
 | `ssh_key` | `DEV_SSH_KEY` | unset | Key to `ssh-add` before the AI tool starts |
-| `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new`, `key_coordinator`, `key_overview`, `key_remove` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N`, `S`, `O`, `X` | Popup and grid keys (after `prefix`) |
+| `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new`, `key_coordinator`, `key_overview`, `key_remove`, `key_close` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N`, `S`, `O`, `X`, `W` | Popup and grid keys (after `prefix`) |
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
 | `worktree_remove_cmd` | `DEV_WORKTREE_REMOVE_CMD` | unset | Remove `dev grid remove` worktrees with your own command; `{path}`, `{branch}`, `{force}` are filled in |

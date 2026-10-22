@@ -44,6 +44,7 @@ typeset -gA _DEV_CFG_ENV=(
     key_coordinator DEV_KEY_COORDINATOR
     key_overview DEV_KEY_OVERVIEW
     key_remove DEV_KEY_REMOVE
+    key_close DEV_KEY_CLOSE
 )
 typeset -gA _DEV_CFG_DEFAULT=(
     ai_cmd claude
@@ -57,6 +58,7 @@ typeset -gA _DEV_CFG_DEFAULT=(
     key_coordinator S
     key_overview O
     key_remove X
+    key_close W
 )
 
 _dev_config_file() {
@@ -1067,19 +1069,26 @@ _dev_close_tab() {
 }
 
 # Closes a tab and its popups but keeps its worktree, files and branch, so
-# `dev grid sync` opens it again. An agent running in its popup stops.
+# `dev grid sync` opens it again. An agent that is working or waiting for an
+# answer would lose that turn, so its tab needs a "y" on a terminal or --force.
 _dev_grid_close() {
-    local ws="" dry_run=0
+    local ws="" dry_run=0 force=0 pane=""
     while (( $# )); do
         case "$1" in
             --dry-run) dry_run=1; shift ;;
+            --force) force=1; shift ;;
+            --pane) _dev_need_value "$1" $# || return 1; pane="$2"; shift 2 ;;
             -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
             *) ws="$1"; shift ;;
         esac
     done
     local repo grid_session index
-    _dev_agent_grid || return 1
-    index="$(_dev_grid_pick_tab "$ws" "close <tab|label|path> [--dry-run]")" || return 1
+    if [[ -n "$pane" ]]; then
+        _dev_grid_tab_of_pane "$pane" close || return 1
+    else
+        _dev_agent_grid || return 1
+        index="$(_dev_grid_pick_tab "$ws" "close <tab|label|path> [--force] [--dry-run]")" || return 1
+    fi
     local window_id="$(tmux display-message -p -t "=${grid_session}:${index}" '#{window_id}')"
     local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
     local -a popups=(${(f)"$(_dev_tab_popups "$window_id")"})
@@ -1087,9 +1096,47 @@ _dev_grid_close() {
         print -r -- "  would close tab ${index} (${label}) and $(_dev_plural ${#popups} popup); the worktree is kept"
         return 0
     fi
+    local agent="$(_dev_tab_agent_state "$window_id")"
+    if [[ "$agent" == (working|waiting) ]] && (( ! force )); then
+        if [[ ! -t 0 ]]; then
+            echo -e "${RED}Not closing tab ${index}: its agent is ${agent}. Pass --force to stop it${NC}"
+            return 1
+        fi
+        local answer
+        print -r -- "Tab ${index} (${label}): its agent is ${agent}, and closing stops it"
+        print -n "Type y to close, anything else to keep it: "
+        read -r answer
+        if [[ "$answer" != (y|Y|yes) ]]; then
+            print -r -- "Kept."
+            return 0
+        fi
+    fi
     # Printed first: run in the tab it closes, dev goes with it.
     echo -e "${GREEN}✓ Closed tab ${index} (${label}); its worktree is kept, and 'dev grid sync' opens it again${NC}"
     _dev_close_tab "$window_id"
+}
+
+# What a tab's agent is doing, as dev agent status reads it, or none.
+_dev_tab_agent_state() {
+    local session
+    if session="$(_dev_agent_session_of "$(tmux show-options -w -t "$1" -qv @dev_ws_id)")"; then
+        tmux capture-pane -p -t "=${session}:" 2>/dev/null | _dev_agent_screen_state
+    else
+        print -r -- none
+    fi
+}
+
+# For a key pressed in a tab: sets repo, grid_session and index in the caller,
+# or refuses a pane that is not a grid tab (a popup's, for one).
+_dev_grid_tab_of_pane() {
+    local pane="$1" verb="$2"
+    repo="$(_dev_grid_of_pane "$pane")"
+    grid_session="$(_dev_grid_session "$repo")"
+    if [[ -z "$repo" || -z "$grid_session" || "$(tmux display-message -p -t "$pane" '#{session_name}')" != "$grid_session" ]]; then
+        echo -e "${RED}Error: not a grid tab — press it in the tab you want to ${verb}${NC}"
+        return 1
+    fi
+    index="$(tmux display-message -p -t "$pane" '#{window_index}')"
 }
 
 # The tab a grid command acts on: the one named, or else the tab it is run in.
@@ -1126,13 +1173,7 @@ _dev_grid_remove() {
     local repo grid_session index
     if [[ -n "$pane" ]]; then
         # prefix X: the tab the key was pressed in.
-        repo="$(_dev_grid_of_pane "$pane")"
-        grid_session="$(_dev_grid_session "$repo")" || return 1
-        if [[ -z "$repo" || -z "$grid_session" || "$(tmux display-message -p -t "$pane" '#{session_name}')" != "$grid_session" ]]; then
-            echo -e "${RED}Error: not a grid tab — press it in the tab you want to remove${NC}"
-            return 1
-        fi
-        index="$(tmux display-message -p -t "$pane" '#{window_index}')"
+        _dev_grid_tab_of_pane "$pane" remove || return 1
     else
         _dev_agent_grid || return 1
         index="$(_dev_grid_pick_tab "$ws" "remove <tab|label|path> [--force] [--dry-run] [--yes]")" || return 1
@@ -1224,9 +1265,10 @@ _dev_grid_remove() {
     echo -e "${GREEN}✓ Removed tab ${index} (${label})${NC}"
 }
 
-# What prefix X runs in its popup: on failure it stays open long enough to read.
-_dev_grid_remove_prompt() {
-    _dev_grid_remove --pane "$1"
+# What prefix X and W run in their popup (a grid command and its arguments): on
+# failure it stays open long enough to read.
+_dev_grid_key_prompt() {
+    "$@"
     local rc=$?
     if (( rc )) && [[ -t 0 ]]; then
         print -n "Press Enter to close "
@@ -1338,7 +1380,8 @@ dev() {
             for setting label in key_agent "AI assistant ($(_dev_cfg ai_cmd))" key_kb "Kanban board (kb)" \
                     key_git "Git UI (lazygit)" key_term "Terminal (shell)" key_new "New branch as a grid tab" \
                     key_coordinator "Grid coordinator agent" key_overview "Dashboard: every tab, its agent's state" \
-                    key_remove "Remove this tab's worktree (asks first)"; do
+                    key_remove "Remove this tab's worktree (asks first)" \
+                    key_close "Close this tab, keep its worktree"; do
                 k="$(_dev_cfg "$setting")"
                 held=""
                 [[ ";${conflicts};" == *";${k}="* ]] && held="${${conflicts#*${k}=}%%;*}"
@@ -1468,13 +1511,13 @@ dev() {
                 sync) _dev_grid_sync "$3" ;;
                 prune) _dev_grid_prune "$3" ;;
                 kill) _dev_grid_kill "$3" ;;
-                close) shift 2; _dev_grid_close "$@" ;;
-                remove)
+                close|remove)
+                    local grid_fn="_dev_grid_$2"
                     shift 2
                     if [[ "$1" == --pane && "$#" -eq 2 ]]; then
-                        _dev_grid_remove_prompt "$2"
+                        _dev_grid_key_prompt "$grid_fn" "$@"
                     else
-                        _dev_grid_remove "$@"
+                        "$grid_fn" "$@"
                     fi
                     ;;
                 add) _dev_grid_add "$3" ;;
@@ -1655,6 +1698,7 @@ dev() {
             echo -e "  ${BLUE}Prefix 1-9${NC}        Tab N; inside an agent popup, tab N's agent"
             echo -e "  ${BLUE}Prefix N${NC}          New branch as a grid tab"
             echo -e "  ${BLUE}Prefix X${NC}          Remove this tab's worktree (asks first)"
+            echo -e "  ${BLUE}Prefix W${NC}          Close this tab, keep its worktree"
             echo -e "  ${BLUE}Prefix S${NC}          The grid's coordinator agent"
             echo -e "  ${BLUE}Prefix O${NC}          Dashboard: the grid as a tree of its agents"
             echo ""
@@ -2051,13 +2095,13 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=8
+_DEV_BINDINGS_REV=9
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
     _dev_has_command kb && parts+="|kb"
     _dev_has_command lazygit && parts+="|lazygit"
-    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview key_remove; do
+    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview key_remove key_close; do
         parts+="|$(_dev_cfg "$key")"
     done
     print -r -- "$parts"
@@ -2091,6 +2135,7 @@ _dev_setup_popup_keybindings() {
         key_coordinator "$(_dev_cfg key_coordinator)"
         key_overview "$(_dev_cfg key_overview)"
         key_remove "$(_dev_cfg key_remove)"
+        key_close "$(_dev_cfg key_close)"
     )
     local -a _dev_key_conflicts
     local name seen=" " bind_status=0
@@ -2105,7 +2150,7 @@ _dev_setup_popup_keybindings() {
         [[ " ${(v)wanted} " == *" ${bound} "* ]] || tmux unbind-key -T prefix "$bound"
     done
 
-    for name in key_term key_agent key_new key_kb key_git key_coordinator key_overview key_remove; do
+    for name in key_term key_agent key_new key_kb key_git key_coordinator key_overview key_remove key_close; do
         if [[ "$seen" == *" ${wanted[$name]} "* ]]; then
             echo -e "${RED}Error: prefix ${wanted[$name]} is configured for two actions; ${name} is not bound${NC}" >&2
             wanted[$name]=""
@@ -2133,6 +2178,8 @@ _dev_setup_popup_keybindings() {
     # in, which display-popup's own command arguments do not.
     [[ -n "${wanted[key_remove]}" ]] && _dev_bind_key "${wanted[key_remove]}" "Remove this tab" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'Remove this tab' 90% zsh ${(qq)DEV_SCRIPT} grid remove --pane '#{pane_id}'"
+    [[ -n "${wanted[key_close]}" ]] && _dev_bind_key "${wanted[key_close]}" "Close this tab" \
+        run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'Close this tab' 90% zsh ${(qq)DEV_SCRIPT} grid close --pane '#{pane_id}'"
     [[ -n "${wanted[key_overview]}" ]] && _dev_bind_key "${wanted[key_overview]}" "Dashboard" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' dashboard 95% zsh ${(qq)DEV_SCRIPT} __dashboard '#{pane_id}' '#{client_name}'"
     if [[ -n "${wanted[key_git]}" ]] && _dev_has_command lazygit; then

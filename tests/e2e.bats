@@ -214,6 +214,21 @@ attached() {
     until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
 }
 
+@test "prefix W in a grid tab closes it and its agent, and keeps the worktree" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" a
+    until_true '[ "$(attached "ai-${ws}")" = 1 ]'
+    press "$PREFIX" d
+    until_true '[ "$(attached "ai-${ws}")" = 0 ]'
+    press "$PREFIX" W
+    until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
+    [ -d "$CODE/myrepo-feat" ]
+    # The agent and the prompt's own popup are gone with the tab.
+    until_true '[ -z "$(others)" ]'
+}
+
 @test "a digit inside the agent of that same tab stays in it" {
     press "$PREFIX" 2
     until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'

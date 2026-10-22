@@ -479,3 +479,85 @@ import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert [r["label"] for r in rows] == ["api\\now"], rows'
 }
+
+# ─── dev grid close with a busy agent ───
+
+grid_close() {
+    local dir="$1"; shift
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid close "$@"' _ "$dir" "$DEV_ZSH" "$@" </dev/null
+}
+
+# Tab 2's agent started on a captured screen, once status reads it as $2: a
+# fresh pane is blank for a moment, and blank reads as unknown, not busy.
+tab2_agent_showing() {
+    fake_agent_showing "$1"
+    agent_cmd "$REPO" start 2
+    local i
+    for i in $(seq 1 100); do
+        agent_cmd "$REPO" status
+        [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +$2 ]] && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+@test "close refuses a tab whose agent is working, off a terminal" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-working.txt working
+    grid_close "$REPO" 2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"agent is working"*"--force"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+    [ -n "$(agent_sessions)" ]
+}
+
+@test "close refuses a tab whose agent is waiting for an answer" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-waiting-trust.txt waiting
+    grid_close "$REPO" 2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"agent is waiting"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
+@test "close --force closes a busy agent's tab and stops the agent" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-working.txt working
+    grid_close "$REPO" 2 --force
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+    [ -z "$(agent_sessions)" ]
+}
+
+@test "close does not stop for an idle agent" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-idle.txt idle
+    grid_close "$REPO" 2
+    [ "$status" -eq 0 ]
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+    [ -z "$(agent_sessions)" ]
+}
+
+answer_close() {
+    local answer="$1" log="$BATS_TEST_TMPDIR/close.log" keys="$BATS_TEST_TMPDIR/close.keys" i
+    rm -f "$log" "$keys"
+    mkfifo "$keys"
+    python3 "$PROJECT_ROOT/tests/pty_client.py" "$keys" "$log" 120 40 -- \
+        zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid close 2' _ "$REPO" "$DEV_ZSH" >/dev/null 2>&1 3>&- &
+    local client=$!
+    for i in $(seq 1 150); do grep -aq 'Type y to close' "$log" 2>/dev/null && break; sleep 0.2; done
+    grep -aq 'agent is working' "$log"
+    printf '%s\r' "$answer" > "$keys"
+    for i in $(seq 1 150); do kill -0 "$client" 2>/dev/null || break; sleep 0.2; done
+    kill "$client" 2>/dev/null || true
+}
+
+@test "on a terminal, close of a busy agent's tab needs a y" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-working.txt working
+    answer_close n
+    grep -aq 'Kept\.' "$BATS_TEST_TMPDIR/close.log"
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+    answer_close y
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
