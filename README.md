@@ -193,8 +193,12 @@ database or ports, for example — export a command; `{branch}` is replaced (quo
 and the command's last line of output must be the new worktree's path:
 
 ```bash
-export DEV_WORKTREE_CREATE_CMD='p="../$(basename "$PWD")-$(printf %s {branch} | tr / -)"; git worktree add -q -b {branch} "$p" >&2 && ./scripts/setup-worktree "$p" >&2 && echo "$p"'
+export DEV_WORKTREE_CREATE_CMD='p="../$(basename "$PWD")-$(printf %s {branch} | tr / -)"; { git worktree add -q "$p" {branch} 2>/dev/null || git worktree add -q -b {branch} "$p"; } >&2 && ./scripts/setup-worktree "$p" >&2 && echo "$p"'
 ```
+
+The first `git worktree add` checks out a branch that already exists, locally or only on a remote (then
+tracking it); the second makes a new one. A command with only `-b` would cut a colleague's pushed
+branch afresh from your HEAD, which is what dev itself avoids.
 
 The command runs in the repo root; send everything but the path to stderr.
 

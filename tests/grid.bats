@@ -287,6 +287,23 @@ add_branch() {
     run ! git -C "$repo" show-ref --verify --quiet refs/heads/x
 }
 
+# A colleague's pushed branch: checked out from the remote and tracking it,
+# never a new branch of the same name cut from whatever HEAD was.
+@test "a branch only on a remote is checked out from it, tracking it" {
+    local upstream; upstream="$(make_repo upstream)"
+    git -C "$upstream" switch -q -c feat
+    git -C "$upstream" commit -q --allow-empty -m "their work"
+    local repo; repo="$(make_repo)"
+    git -C "$repo" remote add origin "$upstream"
+    git -C "$repo" fetch -q origin
+    run_grid "$repo"
+    add_branch "$repo" feat
+    [ "$status" -eq 0 ]
+    local wt; wt="$(git -C "$repo" worktree list --porcelain | awk '/^worktree / {p=$2} /^branch refs\/heads\/feat$/ {print p}')"
+    [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$upstream" rev-parse feat)" ]
+    [ "$(git -C "$wt" rev-parse --abbrev-ref '@{upstream}')" = "origin/feat" ]
+}
+
 @test "a new branch starts from the HEAD of the worktree it is added from" {
     # prefix N runs in the current tab: the new branch builds on what you see.
     local repo; repo="$(make_repo)"

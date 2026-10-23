@@ -928,8 +928,19 @@ _dev_create_worktree() {
             echo -e "${RED}Error: ${wt_path} already exists${NC}" >&2
             return 1
         fi
+        local remote tracked=""
+        for remote in ${(f)"$(git -C "$repo" remote)"}; do
+            if git -C "$repo" show-ref --verify --quiet "refs/remotes/${remote}/${branch}"; then
+                tracked="${remote}/${branch}"
+                [[ "$remote" == origin ]] && break
+            fi
+        done
         if git -C "$repo" show-ref --verify --quiet "refs/heads/${branch}"; then
             git -C "$repo" worktree add -q "$wt_path" "$branch" >&2 || return 1
+        elif [[ -n "$tracked" ]]; then
+            # Someone's pushed branch: their commits, tracking the remote, not a
+            # new branch of the same name cut from whatever HEAD was.
+            git -C "$repo" worktree add -q --track -b "$branch" "$wt_path" "$tracked" >&2 || return 1
         else
             # From the HEAD of the worktree you are in (prefix N: the current
             # tab), so a new branch starts from what you were looking at.
