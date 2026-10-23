@@ -1101,6 +1101,20 @@ remove_cmd() {
     [ ! -d "$CODE/myrepo-feat" ]
 }
 
+# A value is filled in once and never read again as a template: a path that
+# contains "{branch}" is the path, not a second placeholder outside the quotes.
+@test "a placeholder inside a filled-in path is left as text" {
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b 'x;touch${IFS}pwned' "$CODE/myrepo-{branch}"
+    run_grid "$repo"
+    export DEV_WORKTREE_REMOVE_CMD="printf '%s|%s' {path} {branch} > '$BATS_TEST_TMPDIR/got'; git worktree remove {path}"
+    remove_cmd "$repo" 2
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/got")" = "$CODE/myrepo-{branch}|x;touch\${IFS}pwned" ]
+    [ ! -e "$repo/pwned" ] && [ ! -e "$CODE/pwned" ]
+    [ ! -d "$CODE/myrepo-{branch}" ]
+}
+
 @test "a detached worktree gives the remove command an empty branch" {
     # Agent-grid slots are detached; "(detached abc123)" is not a branch name.
     local repo; repo="$(make_repo)"

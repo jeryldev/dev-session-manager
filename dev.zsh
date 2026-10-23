@@ -894,7 +894,7 @@ _dev_create_worktree() {
     local repo="$1" branch="$2" out wt_path rc
     local create_cmd="$(_dev_cfg worktree_create_cmd)"
     if [[ -n "$create_cmd" ]]; then
-        local cmd="${create_cmd//\{branch\}/${(qq)branch}}"
+        local cmd="$(_dev_fill_template "$create_cmd" branch "${(qq)branch}")"
         out="$(cd "$repo" && sh -c "$cmd")"
         rc=$?
         if (( rc )); then
@@ -926,6 +926,27 @@ _dev_create_worktree() {
         fi
     fi
     print -r -- "${wt_path:A}"
+}
+
+# Fills the {name} placeholders of a command template in one pass: a filled-in
+# value is never searched again, so a path containing "{branch}" stays inside
+# its quotes. Unknown {...} text is left as it is.
+_dev_fill_template() {
+    local template="$1" out="" name
+    shift
+    local -A values=("$@")
+    while [[ "$template" == *"{"* ]]; do
+        out+="${template%%\{*}"
+        template="${template#*\{}"
+        name="${template%%\}*}"
+        if [[ "$template" == *"}"* ]] && (( ${+values[$name]} )); then
+            out+="${values[$name]}"
+            template="${template#*\}}"
+        else
+            out+="{"
+        fi
+    done
+    print -r -- "${out}${template}"
 }
 
 # Tab numbers 1-9 not in use, lowest first. New tabs fill these rather than
@@ -1245,12 +1266,11 @@ _dev_grid_remove() {
     if (( gone )); then
         git -C "$repo" worktree prune 2>/dev/null
     elif [[ -n "$remove_cmd" ]]; then
-        local cmd="${remove_cmd//\{path\}/${(qq)workspace}}"
         # A detached worktree has no branch; "(detached abc123)" is display text.
         local real_branch="$branch"
         [[ "$branch" == "("* ]] && real_branch=""
-        cmd="${cmd//\{branch\}/${(qq)real_branch}}"
-        cmd="${cmd//\{force\}/${${force:#0}:+--force}}"
+        local cmd="$(_dev_fill_template "$remove_cmd" path "${(qq)workspace}" \
+            branch "${(qq)real_branch}" force "${${force:#0}:+--force}")"
         (cd "$repo" && sh -c "$cmd")
         local rc=$?
         if (( rc )); then
