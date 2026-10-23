@@ -492,10 +492,14 @@ grid_close() {
 tab2_agent_showing() {
     fake_agent_showing "$1"
     agent_cmd "$REPO" start 2
+    wait_tab2_state "$2"
+}
+
+wait_tab2_state() {
     local i
     for i in $(seq 1 100); do
         agent_cmd "$REPO" status
-        [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +$2 ]] && return 0
+        [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +$1 ]] && return 0
         sleep 0.2
     done
     return 1
@@ -605,4 +609,52 @@ grid_kill() {
     grid_kill "$REPO"
     [ "$status" -eq 0 ]
     ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}
+
+# ─── typing into an agent that is asking something ───
+
+# Shows claude's trust dialog and records whatever is typed into it: a brief
+# typed there would answer the dialog.
+dialog_agent() {
+    cat > "$BATS_TEST_TMPDIR/dialog-agent.sh" <<SH
+stty -echo 2>/dev/null
+awk 'NF { last = NR } { line[NR] = \$0 } END { for (i = 1; i <= last; i++) print line[i] }' '$FIXTURES/claude-2.1.286-waiting-trust.txt'
+exec cat > '$BATS_TEST_TMPDIR/typed'
+SH
+    export DEV_AGENT_LAUNCH_CMD="sh '$BATS_TEST_TMPDIR/dialog-agent.sh'"
+}
+
+@test "send refuses an agent that is waiting for an answer, and types nothing" {
+    grid_with_feat
+    dialog_agent
+    agent_cmd "$REPO" start 2
+    wait_tab2_state waiting
+    agent_cmd "$REPO" send 2 "2 tests still fail"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"waiting for an answer"*"--force"* ]]
+    sleep 0.5
+    [ ! -s "$BATS_TEST_TMPDIR/typed" ]
+}
+
+@test "send --force types into a waiting agent" {
+    grid_with_feat
+    dialog_agent
+    agent_cmd "$REPO" start 2
+    wait_tab2_state waiting
+    agent_cmd "$REPO" send 2 1 --force --no-confirm
+    [ "$status" -eq 0 ]
+    local i
+    for i in $(seq 1 50); do grep -qx 1 "$BATS_TEST_TMPDIR/typed" 2>/dev/null && break; sleep 0.1; done
+    grep -qx 1 "$BATS_TEST_TMPDIR/typed"
+}
+
+@test "start --brief never answers the agent's opening question with the brief" {
+    grid_with_feat
+    dialog_agent
+    printf 'fix the tests\n' > "$BATS_TEST_TMPDIR/brief.md"
+    agent_cmd "$REPO" start 2 --brief "$BATS_TEST_TMPDIR/brief.md"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"waiting for an answer"* ]]
+    sleep 0.5
+    [ ! -s "$BATS_TEST_TMPDIR/typed" ]
 }

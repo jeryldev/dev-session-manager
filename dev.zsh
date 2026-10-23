@@ -1431,7 +1431,7 @@ dev() {
             echo -e "  ${BLUE}dev config set <k> <v>${NC}  Change a setting (also: get <k>, unset <k>, path)"
             echo -e "  ${BLUE}dev agent status${NC}   Each grid tab's agent: working, idle, waiting, dead (--json)"
             echo -e "  ${BLUE}dev agent start <t>${NC} Start tab t's agent (the one prefix a opens)"
-            echo -e "  ${BLUE}dev agent send <t>${NC}  Brief tab t's agent and confirm it arrived"
+            echo -e "  ${BLUE}dev agent send <t>${NC}  Brief tab t's agent and confirm it arrived (never into an open question)"
             echo -e "  ${BLUE}dev agent watch${NC}    One line per agent change (--notify --json --for <s>)"
             echo -e "  ${BLUE}dev agent reset <t>${NC} Tab t's next agent starts a new conversation (--force)"
             echo -e "  ${BLUE}dev agent dashboard${NC} The prefix O dashboard, in this terminal"
@@ -2442,7 +2442,15 @@ _dev_agent_start() {
         fi
     done
     echo -e "${GREEN}✓ Agent for tab ${index} started (${running})${NC}"
-    [[ -z "$brief" ]] || _dev_agent_send "$index" --file "$brief"
+    [[ -n "$brief" ]] || return 0
+    # A brief typed before the screen is drawn could land on an opening
+    # question unseen; once drawn, send refuses a waiting agent. Another
+    # tool's screen is never read, so it is sent after the wait regardless.
+    for i in {1..25}; do
+        [[ "$(tmux capture-pane -p -t "=${running}:" 2>/dev/null | _dev_agent_screen_state)" != unknown ]] && break
+        sleep 0.2
+    done
+    _dev_agent_send "$index" --file "$brief"
 }
 
 # The tab's next agent starts a new conversation. The old one stays in the
@@ -2512,20 +2520,21 @@ _dev_agent_receipt() {
 }
 
 _dev_agent_send() {
-    local ws="$1" file="" confirm=1 timeout=15
+    local ws="$1" file="" confirm=1 timeout=15 force=0
     shift
     local -a words
     while (( $# )); do
         case "$1" in
             --file) _dev_need_value "$1" $# || return 1; file="$2"; shift 2 ;;
             --no-confirm) confirm=0; shift ;;
+            --force) force=1; shift ;;
             --timeout) _dev_need_value "$1" $# || return 1; timeout="$2"; shift 2 ;;
             *) words+=("$1"); shift ;;
         esac
     done
     local text="${(j: :)words}"
     if [[ -z "$ws" || ( -z "$file" && -z "$text" ) ]]; then
-        echo -e "${RED}Usage: dev agent send <tab|label|path> (--file <brief> | <text>) [--no-confirm] [--timeout <s>]${NC}"
+        echo -e "${RED}Usage: dev agent send <tab|label|path> (--file <brief> | <text>) [--no-confirm] [--timeout <s>] [--force]${NC}"
         return 1
     fi
     local repo grid_session index session
@@ -2536,6 +2545,15 @@ _dev_agent_send() {
     # than an error.
     if ! session="$(_dev_agent_session_of "$ws_id")"; then
         echo -e "${RED}Error: no agent running for tab ${index}; start one with 'dev agent start ${index}'${NC}"
+        return 1
+    fi
+    # Keys typed while the agent shows a question answer it: "2 tests fail"
+    # would pick option 2, and Enter on a trust dialog can pick "No, exit".
+    local screen="$(tmux capture-pane -p -t "=${session}:" 2>/dev/null)"
+    if (( ! force )) && [[ "$(print -r -- "$screen" | _dev_agent_screen_state)" == waiting ]]; then
+        local question="$(print -r -- "$screen" | _dev_agent_screen_question)"
+        echo -e "${RED}Not sent: tab ${index}'s agent is waiting for an answer${question:+ (${question})}${NC}"
+        echo -e "${YELLOW}Answer it in its popup (prefix a), or pass --force to type into it anyway${NC}"
         return 1
     fi
 

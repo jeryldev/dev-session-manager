@@ -122,6 +122,7 @@ dev agent status              # every tab: branch, changes, and whether its agen
 dev agent start 2             # start tab 2's agent: the same one prefix + a opens
 dev agent send 2 "run the tests"         # typed, submitted, and confirmed to have arrived
 dev agent send 2 --file brief.md         # long briefs go by file; one short line points at it
+                              # never typed into a question the agent is asking (--force to answer it)
 dev agent watch --notify      # one line per change (working → waiting, idle, dead, unknown), a
                               # heartbeat every 30 min, and a last line when it stops; --json too
 dev agent reset 2             # tab 2's next agent starts a new conversation (--force if it is running)
