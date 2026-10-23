@@ -572,3 +572,37 @@ answer_close() {
     answer_close y
     [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
 }
+
+# ─── dev grid kill with a busy agent ───
+
+grid_kill() {
+    local dir="$1"; shift
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid kill "$@"' _ "$dir" "$DEV_ZSH" "$@" </dev/null
+}
+
+@test "grid kill refuses while an agent is busy, off a terminal" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-working.txt working
+    grid_kill "$REPO"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"tab 2"*"working"*"--force"* ]]
+    tmux has-session -t '=dev-myrepo-grid'
+    [ -n "$(agent_sessions)" ]
+}
+
+@test "grid kill --force kills the grid and its busy agent" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-working.txt working
+    grid_kill "$REPO" --force
+    [ "$status" -eq 0 ]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+    [ -z "$(agent_sessions)" ]
+}
+
+@test "grid kill does not stop for an idle agent" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-idle.txt idle
+    grid_kill "$REPO"
+    [ "$status" -eq 0 ]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+}

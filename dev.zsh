@@ -1051,15 +1051,46 @@ _dev_grid_prune() {
     return $rc
 }
 
+# Closes the whole grid. Like close, it asks first (or needs --force) when an
+# agent in it may be mid-turn.
 _dev_grid_kill() {
-    local dry_run=0 repo grid_session
-    [[ "$1" == "--dry-run" ]] && dry_run=1
+    local dry_run=0 force=0 repo grid_session
+    while (( $# )); do
+        case "$1" in
+            --dry-run) dry_run=1; shift ;;
+            --force) force=1; shift ;;
+            *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+        esac
+    done
     _dev_grid_locate || return 1
     local session_id="$(tmux display-message -p -t "=${grid_session}:" '#{session_id}')"
     local -a popups=(${(f)"$(_dev_popup_descendants "$session_id")"})
     if (( dry_run )); then
         echo "  would kill ${grid_session} and $(_dev_plural ${#popups} popup)"
         return 0
+    fi
+    local -a busy
+    local window_id index doing
+    if (( ! force )); then
+        tmux list-windows -t "=${grid_session}:" -F '#{window_id} #{window_index}' |
+            while read -r window_id index; do
+                doing="$(_dev_agent_doing "$(_dev_tab_agent_state "$window_id")")"
+                [[ -n "$doing" ]] && busy+=("tab ${index}: its agent ${doing}")
+            done
+    fi
+    if (( ${#busy} )); then
+        if [[ ! -t 0 ]]; then
+            echo -e "${RED}Not killing ${grid_session}: ${(j:; :)busy}. Pass --force to stop them${NC}"
+            return 1
+        fi
+        print -rl -- "Killing ${grid_session} stops every agent in it:" "  ${^busy[@]}"
+        local answer
+        print -n "Type y to kill it, anything else to keep it: "
+        read -r answer
+        if [[ "$answer" != (y|Y|yes) ]]; then
+            print -r -- "Kept."
+            return 0
+        fi
     fi
     local popup_id
     for popup_id in "${popups[@]}"; do
@@ -1118,13 +1149,7 @@ _dev_grid_close() {
         print -r -- "  would close tab ${index} (${label}) and $(_dev_plural ${#popups} popup); the worktree is kept"
         return 0
     fi
-    local doing
-    case "$(_dev_tab_agent_state "$window_id")" in
-        working) doing="is working" ;;
-        waiting) doing="is waiting for an answer" ;;
-        # Only Claude's screen is read: another tool's agent may be mid-turn.
-        unknown) doing="is running, and dev cannot tell whether it is busy" ;;
-    esac
+    local doing="$(_dev_agent_doing "$(_dev_tab_agent_state "$window_id")")"
     if [[ -n "$doing" ]] && (( ! force )); then
         if [[ ! -t 0 ]]; then
             echo -e "${RED}Not closing tab ${index}: its agent ${doing}. Pass --force to stop it${NC}"
@@ -1142,6 +1167,17 @@ _dev_grid_close() {
     # Printed first: run in the tab it closes, dev goes with it.
     echo -e "${GREEN}✓ Closed tab ${index} (${label}); its worktree is kept, and 'dev grid sync' opens it again${NC}"
     _dev_close_tab "$window_id"
+}
+
+# How a close or kill names an agent it would stop mid-turn; empty when the
+# agent is idle, dead or absent.
+_dev_agent_doing() {
+    case "$1" in
+        working) print -r -- "is working" ;;
+        waiting) print -r -- "is waiting for an answer" ;;
+        # Only Claude's screen is read: another tool's agent may be mid-turn.
+        unknown) print -r -- "is running, and dev cannot tell whether it is busy" ;;
+    esac
 }
 
 # What a tab's agent is doing, as dev agent status reads it, or none.
@@ -1385,7 +1421,7 @@ dev() {
             echo -e "  ${BLUE}dev grid remove <t>${NC} Delete tab t's worktree, close the tab (asks first)"
             echo -e "  ${BLUE}dev grid sync${NC}      Add tabs for new worktrees (--dry-run)"
             echo -e "  ${BLUE}dev grid prune${NC}     Remove tabs of removed worktrees (--dry-run)"
-            echo -e "  ${BLUE}dev grid kill${NC}      Close the grid and its popups (--dry-run)"
+            echo -e "  ${BLUE}dev grid kill${NC}      Close the grid and its popups (--force --dry-run)"
             echo -e "  ${BLUE}dev reload${NC}         Reload popup keybindings"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
@@ -1543,7 +1579,7 @@ dev() {
                 status) _dev_grid_status ;;
                 sync) _dev_grid_sync "$3" ;;
                 prune) _dev_grid_prune "$3" ;;
-                kill) _dev_grid_kill "$3" ;;
+                kill) shift 2; _dev_grid_kill "$@" ;;
                 close|remove)
                     local grid_fn="_dev_grid_$2"
                     shift 2
