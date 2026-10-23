@@ -412,3 +412,11 @@ popup_clients() { tmux list-clients -F '#{session_name}' | grep -cv '^dev-myrepo
     press "$PREFIX" %
     until_true '[ "$(tmux list-panes -t "=dev-myrepo-grid:2" | wc -l | tr -d " ")" = 2 ]'
 }
+
+@test "prefix W inside a tab's agent closes the agent and that tab" {
+    open_agent_of_tab2
+    press "$PREFIX" W
+    until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
+    [ -d "$CODE/myrepo-feat" ]
+    until_true '[ -z "$(others)" ]'
+}
