@@ -1222,6 +1222,12 @@ _dev_grid_remove() {
     local branch changes gone=0
     if [[ ! -d "$workspace" ]]; then
         gone=1
+    elif ! _dev_worktrees "$repo" 2>/dev/null | tail -n +2 | grep -qxF -- "${workspace:A}"; then
+        # .dev-grid and grid_cmd may list any directory; a remove command can be
+        # as blunt as rm -rf, so it only ever gets a linked worktree.
+        echo -e "${RED}Error: tab ${index} (${workspace}) is not a worktree of ${repo}; dev removes only worktrees${NC}"
+        echo -e "${YELLOW}To close just the tab: dev grid close ${index}${NC}"
+        return 1
     elif ! _dev_workspace_git "$workspace"; then
         changes="unknown"
     fi

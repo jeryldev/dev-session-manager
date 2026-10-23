@@ -1115,6 +1115,24 @@ remove_cmd() {
     [ ! -d "$CODE/myrepo-{branch}" ]
 }
 
+# .dev-grid can list any directory; only a linked worktree of this repo is
+# ever handed to a remove command, which may be as blunt as rm -rf.
+@test "remove refuses a tab that is not a linked worktree of the repo" {
+    local repo; repo="$(make_repo)"
+    mkdir -p "$repo/sub" "$CODE/other"
+    printf '%s\n%s\n%s\n' "$repo" "$repo/sub" "$CODE/other" > "$repo/.dev-grid"
+    run_grid "$repo"
+    export DEV_WORKTREE_REMOVE_CMD="rm -rf {path}"
+    # --force: past the uncommitted-changes check, which .dev-grid itself trips.
+    remove_cmd "$repo" 2 --force
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not a worktree of"* ]]
+    [ -d "$repo/sub" ]
+    remove_cmd "$repo" 3 --force
+    [ "$status" -ne 0 ]
+    [ -d "$CODE/other" ]
+}
+
 @test "a detached worktree gives the remove command an empty branch" {
     # Agent-grid slots are detached; "(detached abc123)" is not a branch name.
     local repo; repo="$(make_repo)"
