@@ -514,8 +514,10 @@ _dev_workspace_entries() {
     print -rl -- "${kept[@]}"
 }
 
-# Over the cap on a terminal: the user picks up to nine, and the choice is
-# written to .dev-grid (kept out of git: it is one person's working set).
+# Over the cap on a terminal: the user picks up to nine. When the list came
+# from git, the choice is written to .dev-grid (kept out of git: it is one
+# person's working set). A .dev-grid or grid_cmd is the user's own list, with
+# comments and labels a rewrite would lose, so it is used for this build only.
 _dev_grid_select() {
     local repo="$1"
     shift
@@ -549,6 +551,15 @@ _dev_grid_select() {
         return 1
     fi
     local entry label
+    if [[ -n "$(_dev_cfg grid_cmd)" || -e "${repo}/.dev-grid" ]]; then
+        local source=".dev-grid"
+        [[ -n "$(_dev_cfg grid_cmd)" ]] && source="grid_cmd"
+        for n in "${picked[@]}"; do
+            print -r -- "${entries[n]}"
+        done
+        echo -e "${YELLOW}Your choice is not saved: the list is your ${source}. Trim it to 9 to skip this question${NC}" >&2
+        return 0
+    fi
     : > "${repo}/.dev-grid" || return 1
     for n in "${picked[@]}"; do
         entry="${entries[n]}"

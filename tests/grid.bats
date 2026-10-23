@@ -802,6 +802,25 @@ many_worktrees() {
 }
 
 # Answers the over-nine prompt with a bad pick and checks nothing was built.
+@test "over nine from a hand-written .dev-grid, the choice is used but the file is kept" {
+    many_worktrees
+    local i
+    { printf '# my week\n'; for i in 1 2 3 4 5 6 7 8 9 10 11; do printf '%s\tw%s\n' "$CODE/myrepo-io$i" "$i"; done; } > "$REPO/.dev-grid"
+    cp "$REPO/.dev-grid" "$BATS_TEST_TMPDIR/before"
+    local log="$BATS_TEST_TMPDIR/sel.log" keys="$BATS_TEST_TMPDIR/sel.keys"
+    mkfifo "$keys"
+    python3 "$PROJECT_ROOT/tests/pty_client.py" "$keys" "$log" 120 40 -- \
+        zsh -c 'cd "$1" && source "$2" 2>/dev/null; dev grid' _ "$REPO" "$DEV_ZSH" >/dev/null 2>&1 3>&- &
+    local client=$!
+    for i in $(seq 1 150); do grep -aq 'Pick up to 9' "$log" 2>/dev/null && break; sleep 0.2; done
+    printf '1 3\r' > "$keys"
+    for i in $(seq 1 150); do [ "$(tmux list-windows -t '=dev-myrepo-grid:' 2>/dev/null | wc -l | tr -d ' ')" -eq 2 ] && break; sleep 0.2; done
+    kill "$client" 2>/dev/null || true
+    [ "$(windows dev-myrepo-grid)" = $'1 w1\n2 w3' ]
+    cmp -s "$REPO/.dev-grid" "$BATS_TEST_TMPDIR/before"
+    grep -aq 'not saved' "$log"
+}
+
 bad_pick() {
     many_worktrees
     tty_dev "$REPO" grid
