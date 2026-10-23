@@ -223,6 +223,9 @@ attached() {
     press "$PREFIX" d
     until_true '[ "$(attached "ai-${ws}")" = 0 ]'
     press "$PREFIX" W
+    # Its screen is not Claude's, so dev cannot tell it is idle, and asks.
+    until_true 'grep -aq "Type y to close" "$SCREEN"'
+    press y $'\r'
     until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
     [ -d "$CODE/myrepo-feat" ]
     # The agent and the prompt's own popup are gone with the tab.
@@ -416,6 +419,8 @@ popup_clients() { tmux list-clients -F '#{session_name}' | grep -cv '^dev-myrepo
 @test "prefix W inside a tab's agent closes the agent and that tab" {
     open_agent_of_tab2
     press "$PREFIX" W
+    until_true 'grep -aq "Type y to close" "$SCREEN"'
+    press y $'\r'
     until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
     [ -d "$CODE/myrepo-feat" ]
     until_true '[ -z "$(others)" ]'

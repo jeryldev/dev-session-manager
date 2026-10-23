@@ -1069,8 +1069,9 @@ _dev_close_tab() {
 }
 
 # Closes a tab and its popups but keeps its worktree, files and branch, so
-# `dev grid sync` opens it again. An agent that is working or waiting for an
-# answer would lose that turn, so its tab needs a "y" on a terminal or --force.
+# `dev grid sync` opens it again. An agent that is working, waiting for an
+# answer, or whose screen dev cannot read could lose a turn, so its tab needs a
+# "y" on a terminal or --force.
 _dev_grid_close() {
     local ws="" dry_run=0 force=0 pane=""
     while (( $# )); do
@@ -1096,14 +1097,20 @@ _dev_grid_close() {
         print -r -- "  would close tab ${index} (${label}) and $(_dev_plural ${#popups} popup); the worktree is kept"
         return 0
     fi
-    local agent="$(_dev_tab_agent_state "$window_id")"
-    if [[ "$agent" == (working|waiting) ]] && (( ! force )); then
+    local doing
+    case "$(_dev_tab_agent_state "$window_id")" in
+        working) doing="is working" ;;
+        waiting) doing="is waiting for an answer" ;;
+        # Only Claude's screen is read: another tool's agent may be mid-turn.
+        unknown) doing="is running, and dev cannot tell whether it is busy" ;;
+    esac
+    if [[ -n "$doing" ]] && (( ! force )); then
         if [[ ! -t 0 ]]; then
-            echo -e "${RED}Not closing tab ${index}: its agent is ${agent}. Pass --force to stop it${NC}"
+            echo -e "${RED}Not closing tab ${index}: its agent ${doing}. Pass --force to stop it${NC}"
             return 1
         fi
         local answer
-        print -r -- "Tab ${index} (${label}): its agent is ${agent}, and closing stops it"
+        print -r -- "Tab ${index} (${label}): its agent ${doing}, and closing stops it"
         print -n "Type y to close, anything else to keep it: "
         read -r answer
         if [[ "$answer" != (y|Y|yes) ]]; then

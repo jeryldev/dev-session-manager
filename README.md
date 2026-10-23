@@ -108,7 +108,8 @@ dev grid kill           # close the whole grid; each takes --dry-run
 
 `dev grid close` (with no tab: the one it is run in; `prefix + W` in the tab) is for a worktree you
 are not using right now, and `dev grid sync` brings the tab back. An agent that is working or waiting
-for an answer would stop mid-turn, so that tab needs a `y` first, or `--force` from a script. Closing a tab with tmux's
+for an answer would stop mid-turn, so that tab needs a `y` first, or `--force` from a script. So does
+one whose state dev cannot read, which is every tool but Claude (see below). Closing a tab with tmux's
 own `prefix + &` leaves its popups running; `dev clean` removes them.
 
 ### Agents in a grid
@@ -294,7 +295,7 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
 | `prefix + N` | New branch tab in the grid | `dev grid add` (skipped if you bound `N` yourself) |
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
-| `prefix + W` | Close this tab and its popups | keeps the worktree; asks first if its agent is busy |
+| `prefix + W` | Close this tab and its popups | keeps the worktree; asks first if its agent may be busy |
 | `prefix + S` | The grid's coordinator agent | one per grid |
 | `prefix + O` | Dashboard: the grid as a tree of its agents | 1-9 select, Enter go, a open agent, q close |
 | `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | one key from agent to agent; a digit you bound yourself is left alone |
@@ -376,8 +377,8 @@ Supported tools:
 Any terminal tool works as `ai_cmd` (one word; flags in `ai_args`), and through it any model that tool
 can reach. Three things are Claude-only today: resuming a tab's conversation (`--resume` with the tab's
 id; `agent_launch_cmd` can pass `{sid}` to another tool's own flag), the agent states in
-`dev agent status`, `watch` and the dashboard (read from Claude's screen; other tools show `unknown`),
-and the automatic `--enable-auto-mode`.
+`dev agent status`, `watch` and the dashboard (read from Claude's screen; other tools show `unknown`,
+and `dev grid close` asks before closing their tab), and the automatic `--enable-auto-mode`.
 
 ## Configuration
 

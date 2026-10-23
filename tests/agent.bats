@@ -520,6 +520,17 @@ tab2_agent_showing() {
     [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
 }
 
+# Only Claude's screen is read: another tool's agent, or one still drawing,
+# reads as unknown, and may be mid-turn.
+@test "close refuses a tab whose agent's state it cannot read" {
+    grid_with_feat
+    tab2_agent_showing unknown-screen.txt unknown
+    grid_close "$REPO" 2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"cannot tell whether it is busy"*"--force"* ]]
+    [ "$(windows dev-myrepo-grid)" = $'1 myrepo\n2 myrepo-feat' ]
+}
+
 @test "close --force closes a busy agent's tab and stops the agent" {
     grid_with_feat
     tab2_agent_showing claude-2.1.286-working.txt working
