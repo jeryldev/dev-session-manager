@@ -8,7 +8,7 @@ setup() {
     load test_helper
     DEV_ZSH="$PROJECT_ROOT/dev.zsh"
     isolate_tmux
-    unset DEV_AI_CMD DEV_KEY_AGENT DEV_KEY_TERM DEV_KEY_GIT DEV_KEY_KB DEV_KEY_NEW
+    unset DEV_AI_CMD DEV_KEY_AGENT DEV_KEY_AGENT_SWITCH DEV_KEY_TERM DEV_KEY_GIT DEV_KEY_KB DEV_KEY_NEW
     start_isolated_server
 }
 
@@ -187,4 +187,20 @@ LEGACY_A='SESSION="ai-#{session_name}-#{window_index}-#{window_name}-claude"; tm
     load_dev
     [ -z "$(prefix_key a)" ]
     [[ "$output" == *"DEV_AI_ARGS"* ]]
+}
+
+@test "prefix A is bound to the per-tab agent switcher by default, and configurable via key_agent_switch" {
+    load_dev
+    [[ "$(prefix_key A)" == *"__dialog"*"Switch AI tool"* ]]
+    export DEV_KEY_AGENT_SWITCH=V
+    load_dev
+    [ -z "$(prefix_key A)" ]
+    [[ "$(prefix_key V)" == *"__dialog"*"Switch AI tool"* ]]
+}
+
+@test "prefix A is left alone when the user bound it" {
+    tmux bind-key A display-message mine
+    load_dev
+    [[ "$(prefix_key A)" == *"display-message mine"* ]]
+    [[ "$output" == *"prefix A"*"display-message mine"* ]]
 }

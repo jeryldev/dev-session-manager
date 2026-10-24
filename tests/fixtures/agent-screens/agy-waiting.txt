@@ -1,0 +1,11 @@
+  Antigravity CLI
+  Gemini · ~/code/dev-session-manager
+
+  Agent needs approval for command execution:
+  Allow running `git status` in this workspace?
+
+  › 1. Allow once
+    2. Always allow
+    3. Reject
+
+  Enter to confirm · esc to cancel

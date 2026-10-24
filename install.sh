@@ -47,6 +47,11 @@ if command -v brew &>/dev/null; then
     fi
   fi
 
+  # Antigravity CLI (AI popup / switcher)
+  if command -v agy &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} agy (AI popup: Prefix A)"
+  fi
+
   # kb (Kanban popup)
   if command -v kb &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} kb (Kanban popup: Prefix k)"

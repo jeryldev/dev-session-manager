@@ -120,6 +120,14 @@ for line in sys.stdin.buffer.read().decode("utf-8").splitlines():
     [ "$output" = $'select 3\ngo 3\nagent 3\nstart 3\nquit\nnone' ]
 }
 
+@test "keys: t switches the selected tab's AI tool, and the frame shows a non-default tool" {
+    run zsh -c 'source "$1" 2>/dev/null; _dev_dashboard_key t 2' _ "$DEV_ZSH" </dev/null
+    [ "$output" = "tool 2" ]
+    tmux set-option -w -t '=dev-myrepo-grid:2' @dev_ai_cmd agy
+    frame 120
+    [[ "$output" == *"├─ 2 myrepo-feat"*$'\n'" │    ○ no agent · agy"* ]]
+}
+
 @test "prefix O opens the dashboard for the pane it was pressed in" {
     zsh -c 'source "$1"' _ "$DEV_ZSH" </dev/null
     local binding; binding="$(tmux list-keys -T prefix | awk '$4 == "O"')"

@@ -34,7 +34,8 @@ sudo dnf install tmux
 
 | Tool | Popup keybinding | Install |
 |------|-----------------|---------|
-| [Claude Code](https://github.com/anthropics/claude-code) | `prefix + a` | `brew install claude-code` |
+| [Claude Code](https://github.com/anthropics/claude-code) | `prefix + a` (default) | `brew install claude-code` |
+| Antigravity CLI (`agy`) | `prefix + a` / `prefix + A` | Antigravity CLI |
 | [kb](https://github.com/jeryldev/kb) | `prefix + k` | `brew install jeryldev/tap/kb` |
 | [lazygit](https://github.com/jesseduffield/lazygit) | `prefix + g` | `brew install lazygit` |
 
@@ -120,12 +121,16 @@ Each tab's `prefix + a` agent can also be driven from the command line — by yo
 dev agent status              # every tab: branch, changes, and whether its agent is working, idle,
                               # waiting for an answer, dead, or not started (--json for scripts)
 dev agent start 2             # start tab 2's agent: the same one prefix + a opens
+dev agent start 2 --cmd agy   # start tab 2's agent using Antigravity CLI (other tabs stay on claude)
+dev agent start 2 -- --model opus        # flags for tab 2's agent, kept for its later starts
 dev agent send 2 "run the tests"         # typed, submitted, and confirmed to have arrived
 dev agent send 2 --file brief.md         # long briefs go by file; one short line points at it
                               # never typed into a question the agent is asking (--force to answer it)
 dev agent watch --notify      # one line per change (working → waiting, idle, dead, unknown), a
                               # heartbeat every 30 min, and a last line when it stops; --json too
-dev agent reset 2             # tab 2's next agent starts a new conversation (--force if it is running)
+dev agent reset 2             # tab 2's next agent starts a new conversation, without saved flags
+                              # (--cmd <tool> to also switch its AI tool; --force if it is running)
+dev agent switch 2 agy        # switch tab 2's AI tool (or press prefix + A in the tab)
 dev agent dashboard           # the prefix + O dashboard, in this terminal
 ```
 
@@ -294,7 +299,8 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 
 | Keybinding | Popup | Tool |
 |------------|-------|------|
-| `prefix + a` | AI coding assistant | claude (configurable) |
+| `prefix + a` | AI coding assistant | claude (configurable per tab or globally) |
+| `prefix + A` | Switch this tab's AI tool | toggles between claude and agy (or custom tool) |
 | `prefix + k` | Kanban board | kb |
 | `prefix + g` | Git UI | lazygit |
 | `prefix + j` | Terminal | `$SHELL` (zsh fallback) |
@@ -302,12 +308,12 @@ Persistent popup windows for AI coding, kanban boards, git management, and a scr
 | `prefix + X` | Remove this tab's worktree | asks first; never the main checkout |
 | `prefix + W` | Close this tab and its popups | keeps the worktree; asks first if its agent may be busy |
 | `prefix + S` | The grid's coordinator agent | one per grid |
-| `prefix + O` | Dashboard: the grid as a tree of its agents | 1-9 select, Enter go, a open agent, q close |
+| `prefix + O` | Dashboard: the grid as a tree of its agents | 1-9 select, Enter go, a open agent, s start, t switch tool, q close |
 | `prefix + 1-9` | Tab N; inside an agent popup or the coordinator, tab N's agent | one key from agent to agent; a digit you bound yourself is left alone |
 
 All popups open at 90% x 90% with a single border.
 
-Every key is configurable (`dev config set key_agent V`; also `key_term`, `key_git`, `key_kb`,
+Every key is configurable (`dev config set key_agent V`; also `key_agent_switch`, `key_term`, `key_git`, `key_kb`,
 `key_new`, `key_coordinator`, `key_overview`, `key_remove`, `key_close`). dev never takes a key you bound yourself: it leaves your binding alone, says which of its
 keys it skipped, and `dev help` marks them `not bound`.
 
@@ -366,31 +372,32 @@ Changing directories with `cd` does not affect which session you get. The sessio
 
 ### AI tool customization
 
-The AI popup uses `claude` by default. Use `dev config set ai_cmd <tool>` (or `DEV_AI_CMD`) for a
-different one; `--enable-auto-mode` is only added for claude. Earlier versions also ran
-`ssh-add ~/.ssh/id_ed25519` silently before the tool; set `ssh_key` if you relied on that.
+The AI popup uses `claude` by default. To switch a single tab between `claude` and `agy` (Antigravity CLI) without changing your default:
+
+- Press `prefix + A` inside the tab (or its popup) to open the AI tool switcher popup; press Enter to toggle between `claude` and `agy` and immediately open the new agent popup.
+- Press `t` on the selected tab inside the `prefix + O` dashboard.
+- Pass `--cmd agy` (or `--cmd claude`) to `dev agent start <tab> --cmd agy` or `dev agent reset <tab> --cmd agy`.
+
+To change the global default, use `dev config set ai_cmd <tool>` (or `DEV_AI_CMD`). By default `--enable-auto-mode` is added for `claude` and `--mode auto` is added for `agy`. Earlier versions also ran `ssh-add ~/.ssh/id_ed25519` silently before the tool; set `ssh_key` if you relied on that.
 
 Supported tools:
 
 | Tool | DEV_AI_CMD |
 |------|------------|
 | [Claude Code](https://github.com/anthropics/claude-code) | `claude` (default) |
+| Antigravity CLI | `agy` |
 | [OpenAI Codex](https://github.com/openai/codex) | `codex` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` |
 | [Aider](https://github.com/paul-gauthier/aider) | `aider` |
 
 Any terminal tool works as `ai_cmd` (one word; flags in `ai_args`), and through it any model that tool
-can reach. Three things are Claude-only today: resuming a tab's conversation (`--resume` with the tab's
-id; `agent_launch_cmd` can pass `{sid}` to another tool's own flag), the agent states in
-`dev agent status`, `watch` and the dashboard (read from Claude's screen; other tools show `unknown`,
-and `dev grid close` asks before closing their tab), and the automatic `--enable-auto-mode`.
+can reach. Both `claude` and `agy` have first-class support for resuming a tab's conversation (`--resume` / `--session-id` for `claude`, `--continue` for `agy`), screen state detection (`working`, `idle`, `waiting`, and context percentage in `dev agent status`, `watch`, and the dashboard), and automatic default flags (`--enable-auto-mode` for `claude`, `--mode auto` for `agy`).
 
 ## Configuration
 
 The simplest way, the same for every install:
 
 ```bash
-dev config set ai_cmd aider
+dev config set ai_cmd agy
 dev config list          # every setting, its value, and where it came from
 dev config get ai_cmd
 dev config unset ai_cmd
@@ -405,9 +412,9 @@ variable overrides the file for as long as it is set.
 | `home_dir` | `DEV_HOME_DIR` | `~/code` | Base directory for `dev <name>` windows |
 | `windows` | `DEV_WINDOWS` | `editor,server,test,shell` | Windows `dev <name>` creates |
 | `ai_cmd` | `DEV_AI_CMD` | `claude` | AI tool for `prefix + a` (one word) |
-| `ai_args` | `DEV_AI_ARGS` | `--enable-auto-mode` for claude, none otherwise | Flags for the AI tool |
+| `ai_args` | `DEV_AI_ARGS` | `--enable-auto-mode` for claude, `--mode auto` for agy, none otherwise | Flags for the AI tool |
 | `ssh_key` | `DEV_SSH_KEY` | unset | Key to `ssh-add` before the AI tool starts |
-| `key_agent`, `key_term`, `key_git`, `key_kb`, `key_new`, `key_coordinator`, `key_overview`, `key_remove`, `key_close` | `DEV_KEY_AGENT`, … | `a`, `j`, `g`, `k`, `N`, `S`, `O`, `X`, `W` | Popup and grid keys (after `prefix`) |
+| `key_agent`, `key_agent_switch`, `key_term`, `key_git`, `key_kb`, `key_new`, `key_coordinator`, `key_overview`, `key_remove`, `key_close` | `DEV_KEY_AGENT`, `DEV_KEY_AGENT_SWITCH`, … | `a`, `A`, `j`, `g`, `k`, `N`, `S`, `O`, `X`, `W` | Popup and grid keys (after `prefix`) |
 | `agent_launch_cmd` | `DEV_AGENT_LAUNCH_CMD` | unset | Start grid agents with your own command; `{ws}`, `{path}`, `{sid}` are filled in |
 | `worktree_create_cmd` | `DEV_WORKTREE_CREATE_CMD` | unset | Create `dev grid add` worktrees with your own command; `{branch}` is filled in |
 | `worktree_remove_cmd` | `DEV_WORKTREE_REMOVE_CMD` | unset | Remove `dev grid remove` worktrees with your own command; `{path}`, `{branch}`, `{force}` are filled in |

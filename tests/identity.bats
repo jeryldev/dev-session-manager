@@ -177,6 +177,32 @@ agent_command() {
     [[ "$output" != *"--resume"* ]]
 }
 
+@test "a grid tab's agy resumes with --continue, or starts fresh with --mode auto" {
+    grid_with_feat
+    export DEV_AI_CMD=agy
+    local sid; sid="$(tab_option 2 @dev_agent_sid)"
+    agent_command "$(pane_of '=dev-myrepo-grid:2')"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"agy --mode auto --continue 2>"*"|| agy --mode auto || cat "* ]]
+}
+
+@test "outside a grid agy runs with --mode auto and no --continue" {
+    start_isolated_server dev-plain
+    export DEV_AI_CMD=agy
+    agent_command "$(pane_of '=dev-plain:')"
+    [[ "$output" == *"agy --mode auto"* ]]
+    [[ "$output" != *"--continue"* ]]
+}
+
+@test "DEV_AI_ARGS replaces agy's default --mode auto" {
+    start_isolated_server dev-plain
+    export DEV_AI_CMD=agy
+    export DEV_AI_ARGS="--mode plan"
+    agent_command "$(pane_of '=dev-plain:')"
+    [[ "$output" == *"agy --mode plan"* ]]
+    [[ "$output" != *"--mode auto"* ]]
+}
+
 @test "DEV_AI_ARGS replaces the default flags" {
     # US-12.3
     start_isolated_server dev-plain

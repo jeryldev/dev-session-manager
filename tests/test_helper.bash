@@ -39,10 +39,11 @@ isolate_tmux() {
     for var in $(compgen -e | grep '^DEV_'); do unset "$var"; done
 
     # A test that opens an agent without a launcher must never start the real
-    # claude: it would sign in, spend, and read the developer's projects.
+    # claude or agy: it would sign in, spend, and read the developer's projects.
     mkdir -p "$BATS_TEST_TMPDIR/stub-bin"
     printf '#!/bin/sh\necho "stub claude $*"\nexec sleep 600\n' > "$BATS_TEST_TMPDIR/stub-bin/claude"
-    chmod +x "$BATS_TEST_TMPDIR/stub-bin/claude"
+    printf '#!/bin/sh\necho "stub agy $*"\nexec sleep 600\n' > "$BATS_TEST_TMPDIR/stub-bin/agy"
+    chmod +x "$BATS_TEST_TMPDIR/stub-bin/claude" "$BATS_TEST_TMPDIR/stub-bin/agy"
     case ":$PATH:" in *":$BATS_TEST_TMPDIR/stub-bin:"*) ;; *) export PATH="$BATS_TEST_TMPDIR/stub-bin:$PATH" ;; esac
 
     command -v tmux &>/dev/null || return 0

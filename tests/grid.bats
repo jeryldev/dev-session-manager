@@ -867,13 +867,19 @@ bad_pick() {
 }
 
 @test "--session builds under another name, and verbs still find it" {
-    # US-15.5/15.6 / D15
+    # US-15.5/15.6 / D15. Named like every dev session (dev-<name>), so that
+    # dev ls, attach and kill reach it as they reach the rest.
     local repo; repo="$(make_repo)"
     run_grid "$repo" --session mine
-    tmux has-session -t '=mine'
+    tmux has-session -t '=dev-mine'
     grid_cmd "$repo" status
     [ "$status" -eq 0 ]
     [[ "$output" == *"myrepo"* ]]
+    run zsh -c 'source "$1" 2>/dev/null; dev ls' _ "$DEV_ZSH" </dev/null
+    [[ "$output" == *"mine"* ]]
+    run zsh -c 'source "$1" 2>/dev/null; dev kill mine' _ "$DEV_ZSH" </dev/null
+    [ "$status" -eq 0 ]
+    ! tmux has-session -t '=dev-mine' 2>/dev/null
 }
 
 @test "the refusal names --session as a way out" {
@@ -958,7 +964,7 @@ bad_pick() {
     run_grid "$repo" --session mine
     [ "$status" -ne 0 ]
     [[ "$output" == *"already"*"dev-myrepo-grid"* ]]
-    ! tmux has-session -t '=mine' 2>/dev/null
+    ! tmux has-session -t '=dev-mine' 2>/dev/null
 }
 
 @test "two sessions stamped for one repo make verbs refuse and list both" {
@@ -1260,6 +1266,21 @@ remove_cmd() {
     remove_cmd "$repo" 2
     [ "$status" -eq 0 ]
     [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+}
+
+# A tab number always means that tab; a label shared by two tabs means
+# neither, rather than whichever comes first.
+@test "a tab number beats a label, and a shared label is refused" {
+    local repo; repo="$(make_repo)"
+    local i
+    for i in a b c; do git -C "$repo" worktree add -q -b "$i" "$CODE/myrepo-$i"; done
+    printf '%s\t3\n%s\tdup\n%s\tdup\n%s\n' "$CODE/myrepo-a" "$CODE/myrepo-b" "$CODE/myrepo-c" "$repo" > "$repo/.dev-grid"
+    run_grid "$repo"
+    close_cmd "$repo" 3 --dry-run
+    [[ "$output" == *"would close tab 3 (dup)"* ]]
+    close_cmd "$repo" dup --dry-run
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"dup"*"more than one tab"* ]]
 }
 
 @test "remove of a name not in the grid lists the tabs" {

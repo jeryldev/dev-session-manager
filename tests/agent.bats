@@ -47,6 +47,29 @@ classify() {
 
 # ─── Reading an agent's screen (US-26.3/26.4; fixtures from claude 2.1.286) ───
 
+# A fixture with one line replaced, for screens no capture shows.
+classify_edited() {
+    local fixture="$1" line="$2" text="$3" fn="${4:-_dev_agent_screen_state}"
+    awk -v n="$line" -v t="$text" 'NR == n { print t; next } { print }' "$FIXTURES/$fixture" > "$BATS_TEST_TMPDIR/edited.txt"
+    run zsh -c 'source "$1" 2>/dev/null; "$3" < "$2"' _ "$DEV_ZSH" "$BATS_TEST_TMPDIR/edited.txt" "$fn" </dev/null
+}
+
+
+
+# Only the line just above the input box is the spinner's: a reply or a
+# prompt in the transcript may be shaped like one ("⏺ Done…", "❯ Continue…").
+@test "a transcript line shaped like the spinner does not make an idle agent working" {
+    classify_edited claude-2.1.286-idle-after-reply.txt 9 "⏺ Done… all tests pass."
+    [ "$output" = "idle" ]
+    classify_edited claude-2.1.286-idle-after-reply.txt 7 "❯ Continue…"
+    [ "$output" = "idle" ]
+}
+
+@test "context use is read from the status line, not the transcript" {
+    classify_edited claude-2.1.286-idle-after-reply.txt 9 "⏺ the limit is ctx:95% here" _dev_agent_screen_ctx
+    [ "$output" = "7" ]
+}
+
 @test "a working claude screen reads as working" {
     classify claude-2.1.286-working.txt
     [ "$output" = "working" ]
@@ -75,6 +98,17 @@ classify() {
 @test "the context percentage is read from claude's status line" {
     run zsh -c 'source "$1" 2>/dev/null; _dev_agent_screen_ctx < "$2"' _ "$DEV_ZSH" "$FIXTURES/claude-2.1.286-idle-after-reply.txt" </dev/null
     [ "$output" = "7" ]
+}
+
+@test "agy screens classify as working, idle, waiting, and report context percentage" {
+    classify agy-working.txt
+    [ "$output" = "working" ]
+    classify agy-idle.txt
+    [ "$output" = "idle" ]
+    classify agy-waiting.txt
+    [ "$output" = "waiting" ]
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_screen_ctx < "$2"' _ "$DEV_ZSH" "$FIXTURES/agy-idle.txt" </dev/null
+    [ "$output" = "12" ]
 }
 
 # ─── dev agent start (US-24) ───
@@ -133,6 +167,39 @@ exec sleep 600
     local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
     run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
     [[ "$output" == *"claude --enable-auto-mode '--model' 'opus' --resume"* ]]
+}
+
+# A fake claude first on PATH, so no test starts the real one.
+fake_claude_on_path() {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexec sleep 600\n' > "$BATS_TEST_TMPDIR/bin/claude"
+    chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+tab2_agent_command() {
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
+}
+
+@test "flags given while the agent runs are kept for its next start, and it says so" {
+    fake_claude_on_path
+    grid_with_feat
+    agent_cmd "$REPO" start 2
+    agent_cmd "$REPO" start 2 -- --model opus
+    [[ "$output" == *"already running"*"--model"*"next start"* ]]
+    tab2_agent_command
+    [[ "$output" == *"'--model' 'opus'"* ]]
+}
+
+@test "reset clears a tab's saved agent flags" {
+    fake_claude_on_path
+    grid_with_feat
+    agent_cmd "$REPO" start 2 -- --model opus
+    agent_cmd "$REPO" reset 2 --force
+    [ "$status" -eq 0 ]
+    tab2_agent_command
+    [[ "$output" != *"--model"* ]]
 }
 
 @test "a launcher that exits at once is an error, not a running agent" {
@@ -230,6 +297,26 @@ while IFS= read -r line; do
 done
 SH
     export DEV_AGENT_LAUNCH_CMD="sh '$BATS_TEST_TMPDIR/echo-agent.sh'"
+}
+
+# Like echoing_agent, but wraps a submitted line itself at 40 columns, with a
+# two-space indent, as claude does: real line breaks that capture-pane -J
+# cannot join.
+wrapping_agent() {
+    cat > "$BATS_TEST_TMPDIR/wrap-agent.sh" <<'SH'
+stty -echo 2>/dev/null
+printf '────\n❯ '
+while IFS= read -r line; do
+    printf '\n❯ %s\n' "$(printf '%s' "$line" | cut -c1-38)"
+    rest="$(printf '%s' "$line" | cut -c39-)"
+    while [ -n "$rest" ]; do
+        printf '  %s\n' "$(printf '%s' "$rest" | cut -c1-38)"
+        rest="$(printf '%s' "$rest" | cut -c39-)"
+    done
+    printf '────\n❯ '
+done
+SH
+    export DEV_AGENT_LAUNCH_CMD="sh '$BATS_TEST_TMPDIR/wrap-agent.sh'"
 }
 
 # Takes the keys and shows nothing: the brief that silently never arrived.
@@ -657,4 +744,74 @@ SH
     [[ "$output" == *"waiting for an answer"* ]]
     sleep 0.5
     [ ! -s "$BATS_TEST_TMPDIR/typed" ]
+}
+
+# ─── the agent key after ai_cmd changes ───
+
+# What prefix a runs in tab 2, with the ai_cmd given, minus showing the popup.
+press_agent_key_in_tab2() {
+    local script pane
+    pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    script="$(DEV_AI_CMD="$1" zsh -c 'source "$1" 2>/dev/null; local -a spec=("${(@f)$(_dev_popup_spec ai)}"); _dev_popup_script ai "${spec[1]}" "${spec[2]}" nodisplay' _ "$DEV_ZSH" </dev/null)"
+    DEV_AI_CMD="$1" tmux run-shell -t "$pane" "$script"
+}
+
+@test "after ai_cmd changes, the agent key reaches the tab's running agent" {
+    grid_with_feat
+    export DEV_AGENT_LAUNCH_CMD="exec sleep 600"
+    agent_cmd "$REPO" start 2
+    [ "$(agent_sessions | wc -l | tr -d ' ')" -eq 1 ]
+    press_agent_key_in_tab2 codex
+    [ "$(agent_sessions | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "an ai_cmd given as a path names a session tmux can reach" {
+    grid_with_feat
+    export DEV_AGENT_LAUNCH_CMD="exec sleep 600"
+    press_agent_key_in_tab2 "$HOME/.claude/local/claude"
+    local name; name="$(agent_sessions | cut -d'|' -f1)"
+    [[ "$name" == *-claude ]]
+    tmux has-session -t "=$name"
+    press_agent_key_in_tab2 "$HOME/.claude/local/claude"
+    [ "$(agent_sessions | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+# ─── a plain window in the grid has no agent ───
+
+@test "opening the agent of a plain window starts nothing" {
+    grid_with_feat
+    export DEV_AGENT_LAUNCH_CMD="exec sleep 600"
+    tmux new-window -d -t '=dev-myrepo-grid:3' -n scratch
+    run zsh -c 'source "$1" 2>/dev/null; _dev_open_tab_agent dev-myrepo-grid 3 ""' _ "$DEV_ZSH" </dev/null
+    [ "$status" -ne 0 ]
+    sleep 0.5
+    [ -z "$(tmux list-sessions -F '#{session_name}' | grep '^ai-')" ]
+}
+
+@test "a brief the agent wraps over several lines is still confirmed" {
+    grid_with_feat
+    wrapping_agent
+    agent_cmd "$REPO" start 2
+    mkdir -p "$BATS_TEST_TMPDIR/briefs/a-rather-long-directory-name"
+    printf 'do x\n' > "$BATS_TEST_TMPDIR/briefs/a-rather-long-directory-name/2026-10-23-a-long-brief-name.md"
+    agent_cmd "$REPO" send 2 --file "$BATS_TEST_TMPDIR/briefs/a-rather-long-directory-name/2026-10-23-a-long-brief-name.md" --timeout 5
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Delivered"* ]]
+}
+
+@test "dev agent start --cmd agy sets the tab's tool to agy while other tabs stay on claude" {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexec sleep 600\n' > "$BATS_TEST_TMPDIR/bin/agy"
+    chmod +x "$BATS_TEST_TMPDIR/bin/agy"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    grid_with_feat
+    agent_cmd "$REPO" start 2 --cmd agy
+    [ "$status" -eq 0 ]
+    local ws2; ws2="$(tmux show-options -w -t '=dev-myrepo-grid:2' -qv @dev_ws_id)"
+    [[ "$(agent_sessions)" == "ai-${ws2}-agy|ai|${ws2}" ]]
+    tab2_agent_command
+    [[ "$output" == *"agy --mode auto"* ]]
+    local pane1; pane1="$(tmux display-message -p -t '=dev-myrepo-grid:1' '#{pane_id}')"
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane1" </dev/null
+    [[ "$output" == *"claude --enable-auto-mode"* ]]
 }

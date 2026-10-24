@@ -185,6 +185,15 @@ attached() {
     [ "$(attached "ai-${ws1}")" = 0 ]
 }
 
+@test "a digit for a plain window leaves the agent open and starts nothing" {
+    tmux new-window -d -t '=dev-myrepo-grid:3' -n scratch
+    open_agent_of_tab2
+    press "$PREFIX" 3
+    until_true 'grep -aq "not a workspace" "$SCREEN"'
+    [ "$(attached "ai-${WS}")" = 1 ]
+    [ "$(tmux list-sessions -F '#{session_name}' | grep -c '^ai-')" -eq 1 ]
+}
+
 @test "a digit for a tab that does not exist leaves the agent open" {
     local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:1' -v @dev_ws_id)"
     press "$PREFIX" a
@@ -424,4 +433,27 @@ popup_clients() { tmux list-clients -F '#{session_name}' | grep -cv '^dev-myrepo
     until_true '[ "$(tmux list-windows -t "=dev-myrepo-grid:" | wc -l | tr -d " ")" -eq 1 ]'
     [ -d "$CODE/myrepo-feat" ]
     until_true '[ -z "$(others)" ]'
+}
+
+@test "prefix A in a grid tab switches that tab to agy and opens its agent popup" {
+    press "$PREFIX" 2
+    until_true '[ "$(tmux display-message -p -t "=dev-myrepo-grid:" "#{window_index}")" = 2 ]'
+    local ws; ws="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    press "$PREFIX" A
+    until_true 'grep -aq "AI tool for" "$SCREEN"'
+    press $'\r'
+    until_true '[ "$(tmux show-options -w -t "=dev-myrepo-grid:2" -qv @dev_ai_cmd)" = "agy" ]'
+    until_true '[ "$(attached "ai-${ws}-agy")" = 1 ]'
+}
+
+@test "in the dashboard, t toggles the selected tab's tool to agy" {
+    press "$PREFIX" O
+    until_true 'grep -aq "q close" "$SCREEN"'
+    press 2
+    until_true 'grep -aq "▶2 myrepo-feat" "$SCREEN"'
+    press t
+    until_true '[ "$(tmux show-options -w -t "=dev-myrepo-grid:2" -qv @dev_ai_cmd)" = "agy" ]'
+    until_true 'grep -aq "no agent · agy" "$SCREEN"'
+    press q
+    until_true '! pgrep -f "__dashboard" >/dev/null'
 }

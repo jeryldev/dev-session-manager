@@ -37,6 +37,7 @@ typeset -gA _DEV_CFG_ENV=(
     worktree_remove_cmd DEV_WORKTREE_REMOVE_CMD
     grid_cmd DEV_GRID_CMD
     key_agent DEV_KEY_AGENT
+    key_agent_switch DEV_KEY_AGENT_SWITCH
     key_term DEV_KEY_TERM
     key_kb DEV_KEY_KB
     key_git DEV_KEY_GIT
@@ -51,6 +52,7 @@ typeset -gA _DEV_CFG_DEFAULT=(
     home_dir "$HOME/code"
     windows editor,server,test,shell
     key_agent a
+    key_agent_switch A
     key_term j
     key_kb k
     key_git g
@@ -250,6 +252,7 @@ _dev_show_prerequisites() {
     echo ""
     echo -e "${YELLOW}Optional tools:${NC}"
     _dev_check_optional claude  "AI popup: Prefix a"    "brew install claude-code"
+    _dev_check_optional agy     "AI popup: Prefix A"    "Antigravity CLI"
     _dev_check_optional kb      "Kanban popup: Prefix k" "brew install jeryldev/tap/kb"
     _dev_check_optional lazygit "Git popup: Prefix g"   "brew install lazygit"
 
@@ -637,8 +640,11 @@ _dev_grid_build() {
         echo -e "${RED}Error: --limit takes 1-9 (prefix 1-9 reaches nine tabs), not '${limit}'${NC}"
         return 1
     fi
-    if [[ -n "$session_name" ]] && ! _dev_validate_name "$session_name"; then
-        return 1
+    if [[ -n "$session_name" ]]; then
+        _dev_validate_name "$session_name" || return 1
+        # dev-<name>, like every session dev makes: dev ls, attach and kill
+        # only look there.
+        session_name="$(_dev_normalize_session_name "$session_name")"
     fi
     if ! repo="$(_dev_repo_root)"; then
         echo -e "${RED}Error: not a git repository: ${PWD}${NC}"
@@ -1430,10 +1436,11 @@ dev() {
             echo -e "  ${BLUE}dev config list${NC}    Settings, and where each comes from"
             echo -e "  ${BLUE}dev config set <k> <v>${NC}  Change a setting (also: get <k>, unset <k>, path)"
             echo -e "  ${BLUE}dev agent status${NC}   Each grid tab's agent: working, idle, waiting, dead (--json)"
-            echo -e "  ${BLUE}dev agent start <t>${NC} Start tab t's agent (the one prefix a opens)"
+            echo -e "  ${BLUE}dev agent start <t>${NC} Start tab t's agent (the one prefix a opens); --cmd <tool>, -- <flags>"
             echo -e "  ${BLUE}dev agent send <t>${NC}  Brief tab t's agent and confirm it arrived (never into an open question)"
             echo -e "  ${BLUE}dev agent watch${NC}    One line per agent change (--notify --json --for <s>)"
-            echo -e "  ${BLUE}dev agent reset <t>${NC} Tab t's next agent starts a new conversation (--force)"
+            echo -e "  ${BLUE}dev agent reset <t>${NC} Tab t's next agent starts a new conversation, flags cleared (--cmd <tool> --force)"
+            echo -e "  ${BLUE}dev agent switch <t>${NC} Switch tab t's AI tool (claude / agy)"
             echo -e "  ${BLUE}dev agent dashboard${NC} The prefix O dashboard, in this terminal"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
             echo -e "                     (--filter <text>  --limit <1-9>  --session <name>)"
@@ -1468,7 +1475,8 @@ dev() {
             echo ""
             echo -e "${YELLOW}Popup keybindings (inside tmux):${NC}"
             local conflicts="$(_dev_text_get -g @dev_key_conflicts)" setting k label held
-            for setting label in key_agent "AI assistant ($(_dev_cfg ai_cmd))" key_kb "Kanban board (kb)" \
+            for setting label in key_agent "AI assistant ($(_dev_cfg ai_cmd))" \
+                    key_agent_switch "Switch this tab's AI tool (claude / agy)" key_kb "Kanban board (kb)" \
                     key_git "Git UI (lazygit)" key_term "Terminal (shell)" key_new "New branch as a grid tab" \
                     key_coordinator "Grid coordinator agent" key_overview "Dashboard: every tab, its agent's state" \
                     key_remove "Remove this tab's worktree (asks first)" \
@@ -1631,6 +1639,7 @@ dev() {
             case "$2" in
                 start) shift 2; _dev_agent_start "$@" ;;
                 reset) shift 2; _dev_agent_reset "$@" ;;
+                switch) shift 2; _dev_agent_switch "$@" ;;
                 send) shift 2; _dev_agent_send "$@" ;;
                 status) _dev_agent_status "$3" ;;
                 watch) shift 2; _dev_agent_watch "$@" ;;
@@ -1639,7 +1648,7 @@ dev() {
                     _dev_dashboard "$here" "$(tmux display-message -p '#{client_name}' 2>/dev/null)"
                     ;;
                 *)
-                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|dashboard ...${NC}"
+                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|switch|dashboard ...${NC}"
                     return 1
                     ;;
             esac
@@ -1783,6 +1792,7 @@ dev() {
             echo ""
             echo -e "${YELLOW}Dev popups and grid keys (default keys; dev help shows yours):${NC}"
             echo -e "  ${BLUE}Prefix a${NC}          AI assistant popup (/exit stops it; prefix a resumes it)"
+            echo -e "  ${BLUE}Prefix A${NC}          Switch this tab's AI tool (claude / agy)"
             echo -e "  ${BLUE}Prefix k${NC}          Kanban board popup"
             echo -e "  ${BLUE}Prefix g${NC}          Git UI popup"
             echo -e "  ${BLUE}Prefix j${NC}          Terminal popup"
@@ -1911,7 +1921,14 @@ _dev_popup_script() {
     local prefix="$1" cmd="$2" suffix="${3:+-$3}" display="${4:-display}"
     local key="$(_dev_popup_key_format)"
     local origin='#{?#{@dev_origin},#{@dev_origin},#{pane_id}}'
-    local create='SESSION="'"${prefix}-${key}${suffix}"'"; tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" "zsh '"${(qq)DEV_SCRIPT}"' __in #{pane_id} '"${(qq)cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
+    # An agent is found by its marks, not its name: a tab keeps the agent it
+    # has when ai_cmd (part of the name) changes, rather than gaining a second.
+    local find=""
+    if [[ "$prefix" == ai ]]; then
+        suffix='-#{?#{@dev_ai_cmd},#{s/[^a-zA-Z0-9_-]/-/:@dev_ai_cmd},'"${3}"'}'
+        find='FOUND="$(tmux list-windows -a -F "##{@dev_popup_kind}|##{@dev_ws_id}|##{session_name}" | awk -F"|" -v k="'"${key}"'" '"'"'$1 == "ai" && $2 == k { print $3; exit }'"'"')"; [ -n "$FOUND" ] && SESSION="$FOUND"; '
+    fi
+    local create='SESSION="'"${prefix}-${key}${suffix}"'"; '"${find}"'tmux has-session -t "=$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" "zsh '"${(qq)DEV_SCRIPT}"' __in #{pane_id} '"${(qq)cmd}"'" \; set-option -t "=$SESSION:" @dev_parent '"'"'#{session_id}'"'"' \; set-option -w -t "=$SESSION:" @dev_ws_id "'"${key}"'" \; set-option -w -t "=$SESSION:" @dev_origin "'"${origin}"'" \; set-option -w -t "=$SESSION:" @dev_popup_kind "'"${prefix}"'"'
     # Pressed inside the very popup it would open: showing it again would nest
     # the session inside itself, one more detach to get out. q: makes the
     # session name a safe sh word whatever it contains.
@@ -1930,7 +1947,10 @@ _dev_popup_script() {
 _dev_popup_spec() {
     case "$1" in
         term) print -rl -- "${SHELL:-zsh}" "" ;;
-        ai) print -rl -- "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_agent_cfg ai_cmd)" ;;
+        # Named after the command, not its path: a '.' in a session name
+        # makes tmux read it as session.window.
+        ai) local ai_cmd="$(_dev_agent_cfg ai_cmd)"
+            print -rl -- "zsh ${(qq)DEV_SCRIPT} __agent '#{pane_id}'" "$(_dev_slug "${ai_cmd:t}")" ;;
         kb) print -rl -- kb "" ;;
         lg) print -rl -- lazygit "" ;;
         *) return 1 ;;
@@ -2019,7 +2039,8 @@ _dev_agent_command() {
     ai_cmd="$(tmux display-message -p -t "$pane" '#{@dev_ai_cmd}')"
     [[ -n "$ai_cmd" ]] || ai_cmd="$(_dev_agent_cfg ai_cmd)"
     local ai_args="$(_dev_agent_cfg ai_args)"
-    [[ -z "$ai_args" && "$ai_cmd" == claude ]] && ai_args="--enable-auto-mode"
+    [[ -z "$ai_args" && "${ai_cmd:t}" == claude ]] && ai_args="--enable-auto-mode"
+    [[ -z "$ai_args" && "${ai_cmd:t}" == agy ]] && ai_args="--mode auto"
     # Flags given to `dev agent start <ws> -- ...` for this workspace.
     local extra="$(_dev_text_get -w -t "$pane" @dev_agent_args)"
     ai_args="${ai_args}${extra:+ $extra}"
@@ -2045,13 +2066,16 @@ _dev_agent_command() {
         out+="$launch"
     else
         local base="${ai_cmd}${ai_args:+ $ai_args}"
-        if [[ "$ai_cmd" == claude && -n "$sid" ]]; then
+        if [[ "${ai_cmd:t}" == claude && -n "$sid" ]]; then
             # --resume first: --session-id refuses an id that already exists.
             # The first time there is nothing to resume, and claude says so in
             # red above the new conversation; that is kept aside and shown only
             # if starting the conversation fails too.
             local err="${TMPDIR:-/tmp}/dev-resume-${sid}.err"
             out+="$base --resume ${(qq)sid} 2>${(qq)err} || $base --session-id ${(qq)sid} || cat ${(qq)err} >&2"
+        elif [[ "${ai_cmd:t}" == agy && -n "$sid" && -z "$(tmux display-message -p -t "$pane" '#{@dev_agent_fresh}')" ]]; then
+            local err="${TMPDIR:-/tmp}/dev-resume-${sid}.err"
+            out+="$base --continue 2>${(qq)err} || $base || cat ${(qq)err} >&2"
         else
             out+="$base"
         fi
@@ -2108,6 +2132,7 @@ _dev_agent_exec() {
     # brief never lands in a shell split beside it.
     origin="$(_dev_agent_origin "$1")"
     tmux set-option -w -t "$origin" @dev_agent_started 1 2>/dev/null
+    tmux set-option -w -t "$origin" -u @dev_agent_fresh 2>/dev/null
     [[ -n "$TMUX_PANE" ]] && tmux set-option -t "$TMUX_PANE" @dev_agent_pane "$TMUX_PANE" 2>/dev/null
     sh -c "$cmd"
     rc=$?
@@ -2186,13 +2211,13 @@ _dev_bind_popup() {
 # installed lazygit or a changed setting changes it and rebinds.
 # Bump when what a key runs or how it looks changes, so a running tmux server
 # picks the change up on the next shell, not only after `dev reload`.
-_DEV_BINDINGS_REV=9
+_DEV_BINDINGS_REV=10
 
 _dev_binding_signature() {
     local key parts="${DEV_VERSION}|${_DEV_BINDINGS_REV}|${DEV_SCRIPT}|${SHELL}"
     _dev_has_command kb && parts+="|kb"
     _dev_has_command lazygit && parts+="|lazygit"
-    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_term key_kb key_git key_new key_coordinator key_overview key_remove key_close; do
+    for key in ai_cmd ai_args ssh_key agent_launch_cmd key_agent key_agent_switch key_term key_kb key_git key_new key_coordinator key_overview key_remove key_close; do
         parts+="|$(_dev_cfg "$key")"
     done
     print -r -- "$parts"
@@ -2220,6 +2245,7 @@ _dev_setup_popup_keybindings() {
     local -A wanted=(
         key_term "$(_dev_cfg key_term)"
         key_agent "$(_dev_cfg key_agent)"
+        key_agent_switch "$(_dev_cfg key_agent_switch)"
         key_new "$(_dev_cfg key_new)"
         key_kb "$(_dev_cfg key_kb)"
         key_git "$(_dev_cfg key_git)"
@@ -2241,7 +2267,7 @@ _dev_setup_popup_keybindings() {
         [[ " ${(v)wanted} " == *" ${bound} "* ]] || tmux unbind-key -T prefix "$bound"
     done
 
-    for name in key_term key_agent key_new key_kb key_git key_coordinator key_overview key_remove key_close; do
+    for name in key_term key_agent key_agent_switch key_new key_kb key_git key_coordinator key_overview key_remove key_close; do
         if [[ "$seen" == *" ${wanted[$name]} "* ]]; then
             echo -e "${RED}Error: prefix ${wanted[$name]} is configured for two actions; ${name} is not bound${NC}" >&2
             wanted[$name]=""
@@ -2258,6 +2284,8 @@ _dev_setup_popup_keybindings() {
             bind_status=1
         fi
     fi
+    [[ -n "${wanted[key_agent_switch]}" ]] && _dev_bind_key "${wanted[key_agent_switch]}" "Switch AI tool" \
+        run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'Switch AI tool' 90% zsh ${(qq)DEV_SCRIPT} agent switch --pane '#{pane_id}' '#{client_name}'"
     [[ -n "${wanted[key_new]}" ]] && _dev_bind_key "${wanted[key_new]}" "New branch tab" \
         run-shell "zsh ${(qq)DEV_SCRIPT} __dialog '#{client_name}' '#{pane_id}' 'New branch tab' 90% zsh ${(qq)DEV_SCRIPT} grid add --prompt"
     if [[ -n "${wanted[key_kb]}" ]] && _dev_has_command kb; then
@@ -2301,33 +2329,56 @@ _dev_setup_popup_keybindings() {
 # screen that matches none is unknown, never a guessed idle. Byte patterns, so
 # the multibyte spinner glyph matches in any locale.
 _dev_agent_screen_state() {
-    local screen="$(cat)" line prev=""
-    if [[ "$screen" == *"Enter to confirm"* ]]; then
+    local screen="$(cat)"
+    if [[ "$screen" == *"Enter to confirm"* || "$screen" == *"needs approval for"* ]]; then
         print -r -- waiting
         return
     fi
-    for line in "${(@f)screen}"; do
-        # The spinner line: a glyph, then a capitalised word and an ellipsis
-        # ("✶ Julienning…"); the finished form ("✻ Cooked for 2s") has none.
-        if [[ "$line" =~ '^[^ ]{1,4} [A-Z][a-z]+…' ]]; then
+    local -a lines=("${(@f)screen}")
+    local box="$(_dev_agent_screen_box "${lines[@]}")" i
+    if (( ! box )); then
+        print -r -- unknown
+        return
+    fi
+    # The spinner is the last line above the input box: a glyph, then a
+    # capitalised word and an ellipsis ("✶ Julienning…"); the finished form
+    # ("✻ Cooked for 2s") has none. Only that line: a reply or a prompt in the
+    # transcript can have the same shape ("⏺ Done…").
+    for (( i = box - 1; i >= 1; i-- )); do
+        [[ -n "${lines[i]//[[:space:]]/}" ]] || continue
+        if [[ "${lines[i]}" =~ '^[^ ]{1,4} [A-Z][a-z]+…' ]]; then
             print -r -- working
-            return
-        fi
-    done
-    for line in "${(@f)screen}"; do
-        # The input box: a rule, then the ❯ prompt.
-        if [[ "$prev" == ─* && "$line" == ❯* ]]; then
+        else
             print -r -- idle
-            return
         fi
-        prev="$line"
+        return
     done
-    print -r -- unknown
+    print -r -- idle
 }
 
+# The line number where the input box's top rule (a rule, then the ❯ or › prompt)
+# starts, the last box on screen; 0 when there is none. A rule wider than the
+# pane wraps onto several lines.
+_dev_agent_screen_box() {
+    local -a lines=("$@")
+    local i
+    for (( i = ${#lines} - 1; i >= 1; i-- )); do
+        if [[ "${lines[i]}" == ─* && ( "${lines[i+1]}" == ❯* || "${lines[i+1]}" == ›* ) ]]; then
+            while (( i > 1 )) && [[ "${lines[i-1]}" == ─* ]]; do (( i-- )); done
+            print -r -- "$i"
+            return
+        fi
+    done
+    print -r -- 0
+}
+
+# Claude's status line, below the input box, says how full the context is;
+# the same text in the transcript says nothing about it.
 _dev_agent_screen_ctx() {
-    local screen="$(cat)"
-    [[ "$screen" =~ 'ctx:([0-9]+)%' ]] && print -r -- "${match[1]}"
+    local -a lines=("${(@f)$(cat)}")
+    local box="$(_dev_agent_screen_box "${lines[@]}")"
+    (( box )) || return 0
+    [[ "${(F)lines[box+1,-1]}" =~ 'ctx:([0-9]+)%' ]] && print -r -- "${match[1]}"
 }
 
 # The first line of a question an agent is waiting on, for status and watch.
@@ -2355,20 +2406,33 @@ _dev_agent_grid() {
     fi
 }
 
-# The tab index a workspace is named by: its tab number, label or path.
+# The tab index a workspace is named by: its tab number, else its label,
+# else its path. Tried in that order, so a label "3" never hides tab 3; a
+# label two tabs share names neither.
 _dev_agent_resolve() {
     local ws="$1" index name workspace
     local want_path="${ws:A}"
     local us=$'\x1f'
-    local -a rows=(${(f)"$(_dev_window_table "$grid_session")"})
+    local -a rows=(${(f)"$(_dev_window_table "$grid_session")"}) by_label by_path
     local row window_id ws_id started
     for row in "${rows[@]}"; do
         IFS="$us" read -r window_id index workspace ws_id started name <<< "$row"
-        if [[ -n "$workspace" && ( "$ws" == "$index" || "$ws" == "$name" || "$want_path" == "$workspace" ) ]]; then
+        [[ -n "$workspace" ]] || continue
+        if [[ "$ws" == "$index" ]]; then
             print -r -- "$index"
             return 0
         fi
+        [[ "$ws" == "$name" ]] && by_label+=("$index")
+        [[ "$want_path" == "$workspace" ]] && by_path+=("$index")
     done
+    if (( ${#by_label} > 1 )); then
+        echo -e "${RED}Error: '${ws}' labels more than one tab (${(j:, :)by_label}); name it by its number${NC}" >&2
+        return 1
+    fi
+    if (( ${#by_label} || ${#by_path} )); then
+        print -r -- "${by_label[1]:-${by_path[1]}}"
+        return 0
+    fi
     echo -e "${RED}Error: no workspace '${ws}' in ${grid_session}. Tabs:${NC}" >&2
     for row in "${rows[@]}"; do
         IFS="$us" read -r window_id index workspace ws_id started name <<< "$row"
@@ -2389,19 +2453,31 @@ _dev_agent_session_of() {
 }
 
 _dev_agent_start() {
-    local ws="$1" brief=""
-    shift
+    local ws="" brief="" cmd=""
     local -a extra
     while (( $# )); do
         case "$1" in
             --brief) _dev_need_value "$1" $# || return 1; brief="$2"; shift 2 ;;
+            --cmd) _dev_need_value "$1" $# || return 1; cmd="$2"; shift 2 ;;
             --) shift; extra=("$@"); break ;;
-            *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            *)
+                if [[ -z "$ws" ]]; then
+                    ws="$1"
+                    shift
+                else
+                    echo -e "${RED}Error: unknown option $1${NC}"
+                    return 1
+                fi
+                ;;
         esac
     done
     if [[ -z "$ws" ]]; then
-        echo -e "${RED}Usage: dev agent start <tab|label|path> [--brief <file>] [-- <agent flags>]${NC}"
+        echo -e "${RED}Usage: dev agent start <tab|label|path> [--cmd <tool>] [--brief <file>] [-- <agent flags>]${NC}"
         return 1
+    fi
+    if [[ -n "$cmd" ]]; then
+        _dev_config_check ai_cmd "$cmd" || return 1
     fi
     if [[ -n "$brief" && ! -r "$brief" ]]; then
         echo -e "${RED}Error: cannot read the brief ${brief}${NC}"
@@ -2412,14 +2488,18 @@ _dev_agent_start() {
     index="$(_dev_agent_resolve "$ws")" || return 1
     local target="=${grid_session}:${index}"
     local ws_id="$(tmux show-options -w -t "$target" -qv @dev_ws_id)"
+    [[ -n "$cmd" ]] && tmux set-option -w -t "$target" @dev_ai_cmd "$cmd"
+    # The tab's agent flags are kept for each later start (a workspace whose
+    # agent runs at a higher effort, say) until `dev agent reset` clears them.
+    if (( ${#extra} )); then
+        _dev_text_set -w -t "$target" @dev_agent_args "${(j: :)${(qq)extra[@]}}"
+    fi
     local running
     if running="$(_dev_agent_session_of "$ws_id")"; then
         echo -e "${BLUE}Agent for tab ${index} already running (${running})${NC}"
+        (( ${#extra} )) && echo -e "${YELLOW}Its flags (${extra[*]}) apply from its next start: /exit it, then start it again${NC}"
         [[ -z "$brief" ]] || _dev_agent_send "$index" --file "$brief"
         return
-    fi
-    if (( ${#extra} )); then
-        _dev_text_set -w -t "$target" @dev_agent_args "${(j: :)${(qq)extra[@]}}"
     fi
     local pane="$(tmux display-message -p -t "$target" '#{pane_id}')"
     local -a spec=("${(@f)$(_dev_popup_spec ai)}")
@@ -2457,17 +2537,21 @@ _dev_agent_start() {
 # agent's own history. A running agent is stopped only with --force: a reset
 # must never end work in progress by accident.
 _dev_agent_reset() {
-    local ws="" force=0
+    local ws="" force=0 cmd=""
     while (( $# )); do
         case "$1" in
             --force) force=1; shift ;;
+            --cmd) _dev_need_value "$1" $# || return 1; cmd="$2"; shift 2 ;;
             -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
             *) ws="$1"; shift ;;
         esac
     done
     if [[ -z "$ws" ]]; then
-        echo -e "${RED}Usage: dev agent reset <tab|label|path> [--force]${NC}"
+        echo -e "${RED}Usage: dev agent reset <tab|label|path> [--cmd <tool>] [--force]${NC}"
         return 1
+    fi
+    if [[ -n "$cmd" ]]; then
+        _dev_config_check ai_cmd "$cmd" || return 1
     fi
     local repo grid_session index
     _dev_agent_grid || return 1
@@ -2492,8 +2576,109 @@ _dev_agent_reset() {
     print -r -- "$(( $(_dev_agent_generation "$key") + 1 ))" > "$file" || return 1
     tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_agent_sid "$key")"
     tmux set-option -w -t "$target" -u @dev_agent_started 2>/dev/null
-    echo -e "${GREEN}✓ Tab ${index}'s next agent starts a new conversation${NC}"
-    [[ -n "$old" ]] && echo -e "  The old one is kept: ${BLUE}claude --resume ${old}${NC}"
+    tmux set-option -w -t "$target" @dev_agent_fresh 1
+    if [[ -n "$cmd" ]]; then
+        tmux set-option -w -t "$target" @dev_ai_cmd "$cmd"
+    else
+        tmux set-option -w -t "$target" -u @dev_ai_cmd 2>/dev/null
+    fi
+    # A fresh start: flags given to an earlier `dev agent start -- ...` go too.
+    tmux set-option -w -t "$target" -u @dev_agent_args 2>/dev/null
+    local effective_cmd="${cmd:-$(_dev_agent_cfg ai_cmd)}"
+    echo -e "${GREEN}✓ Tab ${index}'s next agent (${effective_cmd}) starts a new conversation, with no saved flags${NC}"
+    if [[ "${effective_cmd:t}" == claude && -n "$old" ]]; then
+        echo -e "  The old one is kept: ${BLUE}claude --resume ${old}${NC}"
+    fi
+    return 0
+}
+
+_dev_agent_switch() {
+    local pane="" client="" ws="" choice="" force=0
+    while (( $# )); do
+        case "$1" in
+            --pane) _dev_need_value "$1" $# || return 1; pane="$2"; shift 2; [[ -n "$1" && "$1" != -* ]] && { client="$1"; shift; } ;;
+            --force) force=1; shift ;;
+            -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            *)
+                if [[ -z "$ws" ]]; then
+                    ws="$1"
+                elif [[ -z "$choice" ]]; then
+                    choice="$1"
+                else
+                    echo -e "${RED}Error: unexpected argument $1${NC}"
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    local origin window_id ws_id index label cur alt
+    if [[ -n "$pane" ]]; then
+        origin="$(_dev_agent_origin "$pane")"
+    else
+        local repo grid_session
+        _dev_agent_grid || return 1
+        index="$(_dev_grid_pick_tab "$ws" "agent switch [<tab|label|path>] [<tool>] [--force]")" || return 1
+        origin="$(tmux display-message -p -t "=${grid_session}:${index}" '#{pane_id}')"
+    fi
+    window_id="$(tmux display-message -p -t "$origin" '#{window_id}')"
+    ws_id="$(tmux show-options -w -t "$window_id" -qv @dev_ws_id)"
+    index="$(tmux display-message -p -t "$window_id" '#{window_index}')"
+    label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
+    cur="$(tmux display-message -p -t "$origin" '#{@dev_ai_cmd}')"
+    [[ -n "$cur" ]] || cur="$(_dev_agent_cfg ai_cmd)"
+    alt=agy
+    [[ "${cur:t}" == agy ]] && alt=claude
+
+    if [[ -z "$choice" ]]; then
+        if [[ -t 0 ]]; then
+            print -r -- "AI tool for tab ${index} (${label}) — current: ${cur}"
+            print -n "Switch to [${alt}] (Enter for ${alt}, or type claude / agy / command; q to cancel): "
+            read -r choice || return 0
+            [[ "$choice" == (q|Q) ]] && return 0
+            [[ -n "$choice" ]] || choice="$alt"
+        else
+            choice="$alt"
+        fi
+    fi
+
+    if ! _dev_config_check ai_cmd "$choice"; then
+        if [[ -n "$pane" && -t 0 ]]; then
+            print -n "Press Enter to close "
+            read -r
+        fi
+        return 1
+    fi
+
+    local running=""
+    [[ -n "$ws_id" ]] && running="$(_dev_agent_session_of "$ws_id" 2>/dev/null)"
+    if [[ -n "$running" && "$choice" != "$cur" ]]; then
+        local doing="$(_dev_agent_doing "$(tmux capture-pane -p -t "=${running}:" 2>/dev/null | _dev_agent_screen_state)")"
+        if [[ -n "$doing" && ! $force -eq 1 ]]; then
+            if [[ ! -t 0 ]]; then
+                echo -e "${RED}Error: the agent for tab ${index} ${doing}; pass --force to stop it${NC}"
+                return 1
+            fi
+            print -r -- "Tab ${index} (${label}): its current agent (${cur}) ${doing}; switching stops it"
+            print -n "Type y to stop it and switch, anything else to keep it: "
+            local answer
+            read -r answer
+            if [[ "$answer" != (y|Y|yes) ]]; then
+                print -r -- "Kept."
+                return 0
+            fi
+        fi
+        tmux kill-session -t "=${running}" 2>/dev/null
+    fi
+
+    tmux set-option -w -t "$window_id" @dev_ai_cmd "$choice"
+    echo -e "${GREEN}✓ Tab ${index} (${label}) AI tool set to ${choice}${NC}"
+    if [[ -n "$client" ]]; then
+        local -a spec=("${(@f)$(_dev_popup_spec ai)}")
+        tmux run-shell -t "$origin" "$(_dev_popup_script ai "${spec[1]}" "${spec[2]}" nodisplay)"
+        tmux run-shell -b "sleep 0.3; zsh ${(qq)DEV_SCRIPT} __popup ai ${(qq)client} ${(qq)origin}"
+    fi
     return 0
 }
 
@@ -2503,20 +2688,43 @@ _dev_agent_reset() {
 # `❯` line was typed but not taken. Agents without a ❯ prompt only need the
 # text to appear.
 _dev_agent_receipt_count() {
-    local screen="$1" snippet="$2" line n=0
-    for line in "${(@f)screen}"; do
+    local screen="$1" snippet="${2//[[:space:]]/}" line n=0
+    for line in "${(@f)$(_dev_screen_unwrap "$screen")}"; do
         [[ "$line" == *"$snippet"* ]] && (( n++ ))
     done
     print -r -- "$n"
 }
 
 _dev_agent_receipt() {
-    local screen="$1" snippet="$2" before="${3:-0}" line last_prompt=""
-    (( $(_dev_agent_receipt_count "$screen" "$snippet") > before )) || return 1
-    for line in "${(@f)screen}"; do
-        [[ "$line" == ❯* ]] && last_prompt="$line"
+    local screen="$1" snippet="${2//[[:space:]]/}" before="${3:-0}" line last_prompt=""
+    (( $(_dev_agent_receipt_count "$screen" "$2") > before )) || return 1
+    for line in "${(@f)$(_dev_screen_unwrap "$screen")}"; do
+        [[ "$line" == (❯|›)* ]] && last_prompt="$line"
     done
     [[ "$last_prompt" != *"$snippet"* ]]
+}
+
+# The screen as logical lines, without spaces: claude wraps a long prompt
+# itself, onto lines indented by two spaces, with real line breaks that
+# capture-pane -J cannot join, and may drop the space it broke at.
+_dev_screen_unwrap() {
+    local line joined="" in_prompt=0
+    local -a out
+    for line in "${(@f)1}"; do
+        if (( in_prompt )) && [[ "$line" == "  "[^[:space:]]* ]]; then
+            joined+="${line//[[:space:]]/}"
+            continue
+        fi
+        (( in_prompt )) && out+=("$joined")
+        if [[ "$line" == (❯|›)* ]]; then
+            in_prompt=1 joined="${line//[[:space:]]/}"
+        else
+            in_prompt=0
+            out+=("${line//[[:space:]]/}")
+        fi
+    done
+    (( in_prompt )) && out+=("$joined")
+    print -rl -- "${out[@]}"
 }
 
 _dev_agent_send() {
@@ -2940,7 +3148,7 @@ _dev_dashboard_frame() {
     print -r -- "${root_prefix}${colour[$coord_state]:-}$(_dev_fit "$root_text" $(( width - ${#root_prefix} )))${reset}"
     (( ${#rows} )) && print -r -- " │"
 
-    local k branch_mark stem changes_text state_plain
+    local k branch_mark stem changes_text state_plain tab_cmd default_cmd="$(_dev_agent_cfg ai_cmd)"
     for (( k = 1; k <= ${#rows}; k++ )); do
         IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "${rows[k]}"
         if (( k == ${#rows} )); then
@@ -2955,19 +3163,21 @@ _dev_dashboard_frame() {
             changes_text="$changes"
         fi
         print -r -- " ${branch_mark}$(_dev_fit "${index} $(_dev_fit "$name" $name_w)  ${branch} · ${changes_text}" $(( width - 4 )))"
+        tab_cmd="$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_ai_cmd 2>/dev/null)"
+        [[ "$tab_cmd" == "$default_cmd" ]] && tab_cmd=""
         case "$agent" in
-            none) state_plain="${icon[none]} no agent" ;;
-            *) state_plain="${icon[$agent]:-?} ${(U)agent}${ctx:+ · ctx ${ctx}%}" ;;
+            none) state_plain="${icon[none]} no agent${tab_cmd:+ · ${tab_cmd}}" ;;
+            *) state_plain="${icon[$agent]:-?} ${(U)agent}${tab_cmd:+ · ${tab_cmd}}${ctx:+ · ctx ${ctx}%}" ;;
         esac
         print -r -- "${stem}${colour[$agent]:-}$(_dev_fit "$state_plain" $(( width - 6 )))${reset}"
         [[ -n "$detail" ]] && print -r -- "${stem}$(_dev_fit "\"${detail}\"" $(( width - 6 )))"
     done
     print
-    print -r -- "$(_dev_fit " 1-9 select · Enter go to tab · a open its agent · s start its agent · q close" "$width")"
+    print -r -- "$(_dev_fit " 1-9 select · Enter go to tab · a open its agent · s start its agent · t switch tool · q close" "$width")"
 }
 
 # What a key does, given the selected tab: select N, go N, agent N, start N,
-# quit or none.
+# tool N, quit or none.
 _dev_dashboard_key() {
     local key="$1" selected="$2"
     case "$key" in
@@ -2975,6 +3185,7 @@ _dev_dashboard_key() {
         $'\n'|$'\r') print -r -- "go $selected" ;;
         a) print -r -- "agent $selected" ;;
         s) print -r -- "start $selected" ;;
+        t) print -r -- "tool $selected" ;;
         q|$'\e') print -r -- "quit" ;;
         *) print -r -- "none" ;;
     esac
@@ -3021,12 +3232,20 @@ _dev_dashboard() {
                     return 0
                     ;;
                 agent\ *)
-                    _dev_open_tab_agent "$grid_session" "$n" "$client"
-                    return 0
+                    _dev_open_tab_agent "$grid_session" "$n" "$client" && return 0
                     ;;
                 start\ *)
                     (cd "$repo" && DEV_GRID="$repo" _dev_agent_start "$n") &>/dev/null
                     fetched=-1
+                    ;;
+                tool\ *)
+                    if _dev_tab_exists "$grid_session" "$n"; then
+                        local cur_cmd="$(tmux show-options -w -t "=${grid_session}:${n}" -qv @dev_ai_cmd 2>/dev/null)"
+                        [[ -n "$cur_cmd" ]] || cur_cmd="$(_dev_agent_cfg ai_cmd)"
+                        local next_cmd=agy
+                        [[ "${cur_cmd:t}" == agy ]] && next_cmd=claude
+                        tmux set-option -w -t "=${grid_session}:${n}" @dev_ai_cmd "$next_cmd"
+                    fi
                     ;;
                 quit) return 0 ;;
             esac
@@ -3072,6 +3291,11 @@ _dev_dialog() {
 # popup is opened just after this one closes: one popup cannot open another.
 _dev_open_tab_agent() {
     local grid_session="$1" index="$2" client="$3" target_pane ws_id session
+    # Its popup would start an agent that no stamp leads back to.
+    if [[ -z "$(_dev_text_get -w -t "=${grid_session}:${index}" @dev_workspace)" ]]; then
+        [[ -n "$client" ]] && tmux display-message -c "$client" "Tab ${index} is not a workspace: it has no agent"
+        return 1
+    fi
     tmux select-window -t "=${grid_session}:${index}" 2>/dev/null || return 1
     target_pane="$(tmux display-message -p -t "=${grid_session}:${index}" '#{pane_id}')"
     ws_id="$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_ws_id)"
@@ -3105,6 +3329,12 @@ _dev_switch_agent() {
         return 0
     fi
     ws_id="$(tmux show-options -w -t "=${parent_name}:${index}" -qv @dev_ws_id)"
+    # A window the user made in the grid (prefix c) has no workspace, so no
+    # agent: this popup stays rather than closing for nothing.
+    if [[ -z "$(_dev_text_get -w -t "=${parent_name}:${index}" @dev_workspace)" ]]; then
+        _dev_tell "$inner" "Tab ${index} is not a workspace: it has no agent"
+        return 0
+    fi
     if [[ -n "$ws_id" && "$(tmux show-options -w -t "$popup_session" -qv @dev_ws_id)" == "$ws_id" ]]; then
         _dev_tell "$inner" "Already in this popup"
         return 0
@@ -3181,7 +3411,9 @@ _dev_popup_open() {
     (( ${#spec} )) || return 1
     tmux run-shell -t "$pane" "$(_dev_popup_script "$prefix" "${spec[1]}" "${spec[2]}" nodisplay)"
     key="$(tmux display-message -p -t "$pane" "$(_dev_popup_key_format)")"
-    session="${prefix}-${key}${spec[2]:+-${spec[2]}}"
+    if [[ "$prefix" != ai ]] || ! session="$(_dev_agent_session_of "$key")"; then
+        session="${prefix}-${key}${spec[2]:+-${spec[2]}}"
+    fi
     tmux display-popup -c "$client" -w 90% -h 90% -b single -T " ${key} " \
         -E "tmux attach-session -t '=${session}'"
 }

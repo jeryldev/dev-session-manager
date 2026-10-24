@@ -108,3 +108,26 @@ running() {
     agent_cmd status
     [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +none ]]
 }
+
+@test "reset --cmd agy switches the tab to agy, and plain reset returns it to default" {
+    agent_cmd reset 2 --cmd agy
+    [ "$status" -eq 0 ]
+    [ "$(tmux show-options -w -t '=dev-myrepo-grid:2' -qv @dev_ai_cmd)" = "agy" ]
+    [[ "$output" == *"agy"* ]]
+    agent_cmd reset 2
+    [ "$status" -eq 0 ]
+    [ -z "$(tmux show-options -w -t '=dev-myrepo-grid:2' -qv @dev_ai_cmd)" ]
+}
+
+@test "after reset, an agy tab starts fresh without --continue once, then resumes with --continue" {
+    unset DEV_AGENT_LAUNCH_CMD
+    agent_cmd reset 2 --cmd agy
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
+    [[ "$output" == *"agy --mode auto"* ]]
+    [[ "$output" != *"--continue"* ]]
+    # Once _dev_agent_exec marks the start, @dev_agent_fresh is cleared so later starts resume.
+    tmux set-option -w -t '=dev-myrepo-grid:2' -u @dev_agent_fresh
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
+    [[ "$output" == *"agy --mode auto --continue"* ]]
+}
