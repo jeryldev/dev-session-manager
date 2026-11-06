@@ -392,6 +392,19 @@ install_hooks() {
     [[ "$output" != *"rphan"* ]]
 }
 
+@test "dev ls --all prints only sessions and popups, however many sessions there are" {
+    # zsh echoes `name=value` when `local name` runs again on a name already
+    # local, so a declaration inside the per-session loop leaked onto stdout
+    # from the second session on.
+    start_isolated_server dev-one
+    tmux new-session -d -s dev-two
+    open_popup dev-one term "sleep 300"
+    run_dev ls --all
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"popup_id="* ]]
+    [[ "$output" == *"two"* ]]
+}
+
 @test "dev ls --all marks a popup whose parent is gone" {
     # US-7.3
     start_isolated_server keep
