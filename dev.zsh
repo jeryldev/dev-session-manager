@@ -1120,12 +1120,11 @@ _dev_grid_kill() {
             return 0
         fi
     fi
-    local popup_id
-    for popup_id in "${popups[@]}"; do
-        tmux kill-session -t "$popup_id" 2>/dev/null
-    done
-    tmux kill-session -t "$session_id"
+    _dev_kill_session_tree "$session_id" "${popups[@]}"
     echo -e "${GREEN}✓ Killed ${grid_session} (and $(_dev_plural ${#popups} popup))${NC}"
+    if [[ -n "$REPLY" ]]; then
+        tmux kill-session -t "$REPLY"
+    fi
 }
 
 # The popup sessions of a tab, by the workspace id its popups carry.
@@ -1141,11 +1140,18 @@ _dev_tab_popups() {
 # Closes a tab and its popups. By window id: with renumber-windows on, closing
 # one tab renumbers the rest, and an index taken earlier would hit a live tab.
 _dev_close_tab() {
-    local window_id="$1" sid
-    for sid in ${(f)"$(_dev_tab_popups "$window_id")"}; do
-        tmux kill-session -t "$sid" 2>/dev/null
+    local window_id="$1" sid self=""
+    # The popup this runs in, if any, goes last, as in _dev_kill_session_tree.
+    [[ -n "$TMUX_PANE" ]] && self="$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null)"
+    local -a popups=(${(f)"$(_dev_tab_popups "$window_id")"})
+    for sid in "${popups[@]}"; do
+        [[ "$sid" == "$self" ]] || tmux kill-session -t "$sid" 2>/dev/null
     done
-    tmux kill-window -t "$window_id"
+    tmux kill-window -t "$window_id" || return 1
+    if [[ -n "$self" && ${popups[(Ie)$self]} -gt 0 ]]; then
+        tmux kill-session -t "$self" 2>/dev/null
+    fi
+    return 0
 }
 
 # Closes a tab and its popups but keeps its worktree, files and branch, so
@@ -1587,15 +1593,14 @@ dev() {
                 # targetable at all.
                 local session_id=$(tmux display-message -p -t "=${session_name}:" '#{session_id}')
                 local -a popups=(${(f)"$(_dev_popup_descendants "$session_id")"})
-                local popup_id
-                for popup_id in "${popups[@]}"; do
-                    tmux kill-session -t "$popup_id" 2>/dev/null
-                done
-                tmux kill-session -t "=${session_name}"
+                _dev_kill_session_tree "$session_id" "${popups[@]}"
                 if (( ${#popups} )); then
                     echo -e "${GREEN}✓ Killed session: ${display_name} (and $(_dev_plural ${#popups} popup))${NC}"
                 else
                     echo -e "${GREEN}✓ Killed session: ${display_name}${NC}"
+                fi
+                if [[ -n "$REPLY" ]]; then
+                    tmux kill-session -t "$REPLY"
                 fi
             else
                 _dev_session_not_found "$display_name"
@@ -1988,6 +1993,26 @@ _dev_popup_descendants() {
         done <<< "$rows"
     done
     (( ${#found} )) && print -rl -- "${found[@]}"
+}
+
+# Kills the popups given, then the session $1, except the session this process
+# runs in: killing that one first ended dev before it reached the rest, so a
+# kill typed in a grid's own popup left the grid running. Sets REPLY to that
+# session's id when it was among them; the caller kills it last.
+_dev_kill_session_tree() {
+    local target="$1"; shift
+    local self="" id
+    [[ -n "$TMUX_PANE" ]] && self="$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null)"
+    REPLY=""
+    for id in "$@" "$target"; do
+        if [[ "$id" == "$self" ]]; then
+            REPLY="$self"
+        elif [[ "$id" == "$target" ]]; then
+            tmux kill-session -t "$id"
+        else
+            tmux kill-session -t "$id" 2>/dev/null
+        fi
+    done
 }
 
 # Popups whose parent session no longer exists. Ids are never reused while
