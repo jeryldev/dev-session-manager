@@ -1520,10 +1520,12 @@ dev() {
             if [ -z "$sessions" ]; then
                 echo -e "  ${YELLOW}No dev sessions found${NC}"
             else
+                # Declared outside the loop: zsh prints `name=value` when a
+                # second `local name` runs on a name that is already local.
+                local popup_id
                 while IFS= read -r line; do
                     echo "  ${line#${DEV_SESSION_PREFIX}}"
                     if [[ "$2" == "--all" ]]; then
-                        local popup_id
                         for popup_id in ${(f)"$(_dev_popup_descendants "$(tmux display-message -p -t "=${line%%:*}:" '#{session_id}')")"}; do
                             echo "    ↳ $(tmux display-message -p -t "$popup_id" '#{session_name}')"
                         done
