@@ -329,6 +329,34 @@ install_hooks() {
     [ "$(session_names)" = "keep" ]
 }
 
+# A popup session of $1 whose pane runs dev with the rest of the arguments, as
+# an agent in the prefix-a popup does when asked to kill its own session.
+dev_in_popup_of() {
+    local parent="$1"; shift
+    tmux new-session -d -s "ai-$parent" "zsh -c 'source \"\$0\" 2>/dev/null; dev \"\$@\"; sleep 300' '$DEV_ZSH' $*"
+    tmux set-option -t "=ai-$parent:" @dev_parent "$(session_id_of "$parent")"
+}
+
+wait_until_gone() {
+    local i
+    for (( i = 0; i < 50; i++ )); do
+        tmux has-session -t "=$1" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "dev kill run from inside one of the session's popups still kills the session" {
+    # Killing that popup first took the dev process down with it, before it
+    # reached the session itself.
+    start_isolated_server keep
+    tmux new-session -d -s dev-proj
+    open_popup dev-proj term "sleep 300"
+    dev_in_popup_of dev-proj kill proj
+    wait_until_gone dev-proj
+    [ "$(session_names)" = "keep" ]
+}
+
 @test "dev kill leaves other sessions' popups alone" {
     start_isolated_server keep
     tmux new-session -d -s dev-proj

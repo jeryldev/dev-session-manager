@@ -639,6 +639,22 @@ grid_cmd() {
     [ "$(tmux list-sessions -F '#{session_name}')" = "keep" ]
 }
 
+@test "dev grid kill run from inside the grid's popup still kills the grid" {
+    # Killing that popup first took the dev process down with it, before it
+    # reached the grid itself.
+    local repo; repo="$(make_repo)"
+    run_grid "$repo"
+    tmux new-session -d -s keep
+    tmux new-session -d -s ai-x -c "$repo" "zsh -c 'source \"\$0\" 2>/dev/null; dev grid kill --force; sleep 300' '$DEV_ZSH'"
+    tmux set-option -t '=ai-x:' @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    local i
+    for (( i = 0; i < 50; i++ )); do
+        tmux has-session -t '=dev-myrepo-grid' 2>/dev/null || break
+        sleep 0.1
+    done
+    [ "$(tmux list-sessions -F '#{session_name}')" = "keep" ]
+}
+
 @test "dev grid kill --dry-run kills nothing" {
     # US-16.4
     local repo; repo="$(make_repo)"
@@ -1417,6 +1433,25 @@ tab_popup() {
     [ -d "$CODE/myrepo-feat" ]
     git -C "$repo" worktree list | grep -q "myrepo-feat"
     [[ "$output" == *"dev grid sync"* ]]
+}
+
+@test "close run from inside the tab's own popup still closes the tab" {
+    # Killing that popup first took the dev process down with it, before it
+    # reached the tab.
+    local repo; repo="$(make_repo)"
+    git -C "$repo" worktree add -q -b feat "$CODE/myrepo-feat"
+    run_grid "$repo"
+    local id; id="$(tmux show-options -w -t '=dev-myrepo-grid:2' -v @dev_ws_id)"
+    tmux new-session -d -s "ai-$id" -c "$repo" "zsh -c 'source \"\$0\" 2>/dev/null; dev grid close 2 --force; sleep 300' '$DEV_ZSH'"
+    tmux set-option -t "=ai-$id:" @dev_parent "$(tmux display-message -p -t '=dev-myrepo-grid:' '#{session_id}')"
+    tmux set-option -w -t "=ai-$id:" @dev_ws_id "$id"
+    local i
+    for (( i = 0; i < 50; i++ )); do
+        [ "$(windows dev-myrepo-grid)" = "1 myrepo" ] && break
+        sleep 0.1
+    done
+    [ "$(windows dev-myrepo-grid)" = "1 myrepo" ]
+    ! tmux has-session -t "=ai-$id" 2>/dev/null
 }
 
 @test "a closed tab comes back with sync" {
