@@ -681,6 +681,17 @@ grid_kill() {
     [ -n "$(agent_sessions)" ]
 }
 
+@test "grid kill --fresh refused for a busy agent resets no conversation" {
+    grid_with_feat
+    tab2_agent_showing claude-2.1.286-working.txt working
+    local before; before="$(tmux show-options -w -t '=dev-myrepo-grid:2' -qv @dev_agent_sid)"
+    grid_kill "$REPO" --fresh
+    [ "$status" -ne 0 ]
+    tmux kill-session -t '=dev-myrepo-grid'
+    run_grid "$REPO"
+    [ "$(tmux show-options -w -t '=dev-myrepo-grid:2' -qv @dev_agent_sid)" = "$before" ]
+}
+
 @test "grid kill --force kills the grid and its busy agent" {
     grid_with_feat
     tab2_agent_showing claude-2.1.286-working.txt working

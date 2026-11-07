@@ -606,6 +606,19 @@ _dev_agent_generation() {
     print -r -- "$n"
 }
 
+# Moves a conversation key to its next generation, so the id derived from it
+# is new: used by `dev agent reset` and `dev grid kill --fresh`. With --fresh
+# it also leaves a mark the next grid build turns into @dev_agent_fresh: the
+# kill takes the tab's own options with it, and agy resumes by --continue, not
+# by id.
+_dev_agent_next_generation() {
+    local file="$(_dev_agent_generation_file "$1")"
+    mkdir -p "${file:h}" || return 1
+    print -r -- "$(( $(_dev_agent_generation "$1") + 1 ))" > "$file" || return 1
+    [[ "$2" == --fresh ]] && : > "${file}.fresh"
+    return 0
+}
+
 # A workspace's conversation id: derived from its key, so /exit, a reboot and
 # a rebuilt grid all resume the same conversation, until a reset moves it on.
 _dev_agent_sid() {
@@ -624,6 +637,11 @@ _dev_stamp_workspace() {
     tmux set-option -w -t "$target" @dev_ws_id "$(_dev_slug "${wt_path:t}")-${path_hash[1,4]}"
     _dev_text_set -w -t "$target" @dev_agent_key "dev-grid:${repo}:${wt_path}"
     tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_agent_sid "dev-grid:${repo}:${wt_path}")"
+    local fresh_mark="$(_dev_agent_generation_file "dev-grid:${repo}:${wt_path}").fresh"
+    if [[ -e "$fresh_mark" ]]; then
+        tmux set-option -w -t "$target" @dev_agent_fresh 1
+        rm -f "$fresh_mark"
+    fi
 }
 
 _dev_grid_build() {
@@ -1082,11 +1100,12 @@ _dev_grid_prune() {
 # Closes the whole grid. Like close, it asks first (or needs --force) when an
 # agent in it may be mid-turn.
 _dev_grid_kill() {
-    local dry_run=0 force=0 repo grid_session
+    local dry_run=0 force=0 fresh=0 repo grid_session
     while (( $# )); do
         case "$1" in
             --dry-run) dry_run=1; shift ;;
             --force) force=1; shift ;;
+            --fresh) fresh=1; shift ;;
             *) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
         esac
     done
@@ -1095,6 +1114,7 @@ _dev_grid_kill() {
     local -a popups=(${(f)"$(_dev_popup_descendants "$session_id")"})
     if (( dry_run )); then
         echo "  would kill ${grid_session} and $(_dev_plural ${#popups} popup)"
+        (( fresh )) && echo "  and give every tab's next agent a new conversation"
         return 0
     fi
     local -a busy
@@ -1120,8 +1140,27 @@ _dev_grid_kill() {
             return 0
         fi
     fi
+    # Read before the kill: the keys and ids live on the tabs it closes.
+    local -a resumes
+    if (( fresh )); then
+        local key old cmd
+        tmux list-windows -t "=${grid_session}:" -F '#{window_id}' | while read -r window_id; do
+            key="$(_dev_text_get -w -t "$window_id" @dev_agent_key)"
+            [[ -n "$key" ]] || continue
+            _dev_agent_next_generation "$key" --fresh || return 1
+            old="$(tmux show-options -w -t "$window_id" -qv @dev_agent_sid)"
+            cmd="$(tmux show-options -w -t "$window_id" -qv @dev_ai_cmd)"
+            if [[ "${${cmd:-$(_dev_agent_cfg ai_cmd)}:t}" == claude && -n "$old" ]]; then
+                resumes+=("claude --resume ${old}")
+            fi
+        done || return 1
+    fi
     _dev_kill_session_tree "$session_id" "${popups[@]}"
     echo -e "${GREEN}✓ Killed ${grid_session} (and $(_dev_plural ${#popups} popup))${NC}"
+    if (( fresh )); then
+        echo -e "${GREEN}✓ The next 'dev' starts every tab's agent in a new conversation${NC}"
+        (( ${#resumes} )) && print -rl -- "  The old ones are kept:" "    ${^resumes[@]}"
+    fi
     if [[ -n "$REPLY" ]]; then
         tmux kill-session -t "$REPLY"
     fi
@@ -1456,7 +1495,7 @@ dev() {
             echo -e "  ${BLUE}dev grid remove <t>${NC} Delete tab t's worktree, close the tab (asks first)"
             echo -e "  ${BLUE}dev grid sync${NC}      Add tabs for new worktrees (--dry-run)"
             echo -e "  ${BLUE}dev grid prune${NC}     Remove tabs of removed worktrees (--dry-run)"
-            echo -e "  ${BLUE}dev grid kill${NC}      Close the grid and its popups (--force --dry-run)"
+            echo -e "  ${BLUE}dev grid kill${NC}      Close the grid and its popups (--fresh --force --dry-run)"
             echo -e "  ${BLUE}dev reload${NC}         Reload popup keybindings"
             echo -e "  ${BLUE}dev help${NC}           Show this help"
             echo -e "  ${BLUE}dev tmux${NC}           Show tmux commands reference"
@@ -2598,9 +2637,7 @@ _dev_agent_reset() {
         fi
         tmux kill-session -t "=${running}" 2>/dev/null
     fi
-    local file="$(_dev_agent_generation_file "$key")"
-    mkdir -p "${file:h}" || return 1
-    print -r -- "$(( $(_dev_agent_generation "$key") + 1 ))" > "$file" || return 1
+    _dev_agent_next_generation "$key" || return 1
     tmux set-option -w -t "$target" @dev_agent_sid "$(_dev_agent_sid "$key")"
     tmux set-option -w -t "$target" -u @dev_agent_started 2>/dev/null
     tmux set-option -w -t "$target" @dev_agent_fresh 1

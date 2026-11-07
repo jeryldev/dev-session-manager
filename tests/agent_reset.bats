@@ -131,3 +131,63 @@ running() {
     run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
     [[ "$output" == *"agy --mode auto --continue"* ]]
 }
+
+# ─── dev grid kill --fresh ───
+
+grid_kill() {
+    run zsh -c 'cd "$1" && source "$2" 2>/dev/null; shift 2; dev grid kill "$@"' _ "$REPO" "$DEV_ZSH" "$@" </dev/null
+}
+
+@test "grid kill --fresh gives every tab a new conversation on the next grid" {
+    local one; one="$(sid 1)"
+    local two; two="$(sid 2)"
+    grid_kill --fresh
+    [ "$status" -eq 0 ]
+    ! tmux has-session -t '=dev-myrepo-grid' 2>/dev/null
+    run_grid "$REPO"
+    [ -n "$(sid 1)" ]
+    [ "$(sid 1)" != "$one" ]
+    [ "$(sid 2)" != "$two" ]
+}
+
+@test "grid kill --fresh prints how to reopen the old conversations" {
+    local two; two="$(sid 2)"
+    grid_kill --fresh
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"claude --resume ${two}"* ]]
+}
+
+@test "grid kill without --fresh resumes the same conversations" {
+    local one; one="$(sid 1)"
+    grid_kill
+    [ "$status" -eq 0 ]
+    run_grid "$REPO"
+    [ "$(sid 1)" = "$one" ]
+}
+
+@test "grid kill --fresh --dry-run resets nothing" {
+    local one; one="$(sid 1)"
+    grid_kill --fresh --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"new conversation"* ]]
+    tmux has-session -t '=dev-myrepo-grid'
+    [ "$(sid 1)" = "$one" ]
+}
+
+@test "after grid kill --fresh, an agy tab starts without --continue once" {
+    unset DEV_AGENT_LAUNCH_CMD
+    export DEV_AI_CMD=agy
+    grid_kill --fresh
+    [ "$status" -eq 0 ]
+    run_grid "$REPO"
+    local pane; pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
+    [[ "$output" == *"agy"* ]]
+    [[ "$output" != *"--continue"* ]]
+    # Once started, a later grid resumes again.
+    tmux kill-session -t '=dev-myrepo-grid'
+    run_grid "$REPO"
+    pane="$(tmux display-message -p -t '=dev-myrepo-grid:2' '#{pane_id}')"
+    run zsh -c 'source "$1" 2>/dev/null; _dev_agent_command "$2"' _ "$DEV_ZSH" "$pane" </dev/null
+    [[ "$output" == *"--continue"* ]]
+}
