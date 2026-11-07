@@ -789,6 +789,21 @@ sys.exit(proc.wait())
     [[ "$output" == *"dev reload"* ]]
 }
 
+@test "dev help lists every dev agent command" {
+    local usage cmd
+    usage="$(sed -n 's/.*Usage: dev agent \([a-z|]*\) \.\.\..*/\1/p' "$PROJECT_ROOT/dev.zsh" | head -1)"
+    [ -n "$usage" ]
+    run_dev help
+    for cmd in ${usage//|/ }; do
+        [[ "$output" == *"dev agent ${cmd}"* ]] || { echo "dev help does not list dev agent ${cmd}" >&2; return 1; }
+    done
+}
+
+@test "dev help says status shows each tab's conversation" {
+    run_dev help
+    [[ "$(printf '%s\n' "$output" | grep 'dev agent status')" == *"conversation"* ]]
+}
+
 @test "dev help shows popup keybindings" {
     run_dev help
     [[ "$output" == *"Popup keybindings"* ]]
