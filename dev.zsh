@@ -667,9 +667,12 @@ _dev_json_text() {
     print -r -- "$out"
 }
 
-# The last value Claude wrote for a field of a line type, or nothing.
+# The last value Claude wrote for a field of a line type, or nothing. Claude
+# writes its title and last prompt again after each turn, so only the file's
+# last 4 MB are read: a long conversation passes a gigabyte, and macOS grep
+# takes seconds to read that much.
 _dev_jsonl_last() {
-    local line="$(grep -a -F "\"type\":\"$2\",\"$3\":\"" "$1" 2>/dev/null | tail -1)"
+    local line="$(tail -c 4194304 "$1" 2>/dev/null | grep -a -F "\"type\":\"$2\",\"$3\":\"" | tail -1)"
     [[ -n "$line" ]] || return 0
     _dev_json_text "${line#*\"$3\":\"}"
 }

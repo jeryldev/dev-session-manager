@@ -79,6 +79,36 @@ agent_cmd() {
     [ -z "$output" ]
 }
 
+# Claude writes a conversation's title and last prompt again after each turn,
+# so the newest are at the end; a file grows past a gigabyte, so dev reads the
+# end only.
+big_conversation() {
+    local dir="$HOME/.claude/projects/-any-folder"
+    mkdir -p "$dir"
+    {
+        printf '%s\n' '{"type":"user","message":{"role":"user","content":"start here"}}'
+        printf '%s\n' '{"type":"ai-title","aiTitle":"Old title","sessionId":"s"}'
+        printf '%s\n' '{"type":"last-prompt","lastPrompt":"old prompt","sessionId":"s"}'
+        local filler; filler="$(head -c 1048576 /dev/zero | tr '\0' 'x')"
+        local i; for (( i = 0; i < 10; i++ )); do printf '{"type":"assistant","text":"%s"}\n' "$filler"; done
+        printf '%s\n' "$@"
+    } > "$dir/abc.jsonl"
+    touch -t 202611070934 "$dir/abc.jsonl"
+}
+
+@test "a large conversation's title and last prompt come from its end" {
+    big_conversation '{"type":"ai-title","aiTitle":"New title","sessionId":"s"}' \
+        '{"type":"last-prompt","lastPrompt":"new prompt","sessionId":"s"}'
+    summary abc
+    [ "$output" = "Nov 07 09:34|New title|new prompt" ]
+}
+
+@test "a large conversation is not read whole for a title it no longer repeats" {
+    big_conversation
+    summary abc
+    [ "$output" = "Nov 07 09:34||" ]
+}
+
 @test "CLAUDE_CONFIG_DIR moves where conversations are found" {
     export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/claude-elsewhere"
     saved abc titled.jsonl
