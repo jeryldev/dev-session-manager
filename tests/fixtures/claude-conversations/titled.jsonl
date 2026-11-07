@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"first"},"sessionId":"s"}
+{"type":"ai-title","aiTitle":"Old title","sessionId":"s"}
+{"type":"last-prompt","lastPrompt":"earlier prompt","leafUuid":"a","sessionId":"s"}
+{"type":"ai-title","aiTitle":"Fix the \"login\" bug","sessionId":"s"}
+{"type":"last-prompt","lastPrompt":"add a test for C:\\tmp\nthen push","leafUuid":"b","sessionId":"s"}
+{"type":"last-prompt","leafUuid":"c","sessionId":"s"}

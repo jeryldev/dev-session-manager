@@ -120,7 +120,8 @@ Each tab's `prefix + a` agent can also be driven from the command line — by yo
 
 ```bash
 dev agent status              # every tab: branch, changes, and whether its agent is working, idle,
-                              # waiting for an answer, dead, or not started (--json for scripts)
+                              # waiting for an answer, dead, or not started, with when its conversation
+                              # last changed and its title (--json for scripts)
 dev agent start 2             # start tab 2's agent: the same one prefix + a opens
 dev agent start 2 --cmd agy   # start tab 2's agent using Antigravity CLI (other tabs stay on claude)
 dev agent start 2 -- --model opus        # flags for tab 2's agent, kept for its later starts
@@ -131,6 +132,8 @@ dev agent watch --notify      # one line per change (working → waiting, idle, 
                               # heartbeat every 30 min, and a last line when it stops; --json too
 dev agent reset 2             # tab 2's next agent starts a new conversation, without saved flags
                               # (--cmd <tool> to also switch its AI tool; --force if it is running)
+dev agent history 2           # every conversation tab 2 has had, newest first: when, title, last
+                              # prompt, and the claude --resume that reopens it
 dev agent switch 2 agy        # switch tab 2's AI tool (or press prefix + A in the tab)
 dev agent dashboard           # the prefix + O dashboard, in this terminal
 ```
@@ -143,7 +146,13 @@ select the tab, as tmux's own do.
 `prefix + a` starts it again on the *same* conversation, because a tab's conversation id is derived
 from its worktree path (Claude only; see [AI tool customization](#ai-tool-customization)).
 `dev agent reset <tab>` gives the tab a new conversation; the old one stays in Claude's history, and
-reset prints the `claude --resume <id>` that reopens it.
+reset prints the `claude --resume <id>` that reopens it. `dev agent history <tab>` lists them all.
+
+**Which conversation is which.** `dev agent status`, the dashboard, `dev grid kill --fresh` and
+`dev agent history` show each conversation's title (one given with `/rename` first, else Claude's
+own), the last thing typed in it, and when it last changed. They read the file Claude keeps the
+conversation in, under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR`). That format is Claude's, not a
+published one: what dev cannot read there is left blank, never an error. agy tabs show none of it.
 
 `watch` runs `watch_cmd` (or `DEV_WATCH_CMD`) at each heartbeat and passes its output through, so a
 repo can add its own checks — CI or review status, say.

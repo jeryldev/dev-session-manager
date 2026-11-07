@@ -622,9 +622,89 @@ _dev_agent_next_generation() {
 # A workspace's conversation id: derived from its key, so /exit, a reboot and
 # a rebuilt grid all resume the same conversation, until a reset moves it on.
 _dev_agent_sid() {
-    local key="$1" n="$(_dev_agent_generation "$1")"
-    (( n )) && key+="#${n}"
+    _dev_agent_sid_at "$1" "$(_dev_agent_generation "$1")"
+}
+
+# The id a key derived at a given generation: every earlier conversation of a
+# tab can be found again, for `dev agent history`.
+_dev_agent_sid_at() {
+    local key="$1"
+    (( $2 )) && key+="#$2"
     _dev_sid_for "$key"
+}
+
+# The file Claude keeps a conversation in. Found by its id, which is unique,
+# rather than by Claude's name for the workspace's folder: that rule is
+# Claude's own, and keeps some characters ('.') but not others.
+_dev_claude_conversation_file() {
+    local -a files=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl(N.om))
+    (( ${#files} )) && print -r -- "${files[1]}"
+}
+
+# A JSON string's text, from just after its opening quote: up to the first
+# quote not escaped, with its escapes read. A line break reads as a space, so
+# the text stays on one line.
+_dev_json_text() {
+    setopt localoptions extendedglob
+    local rest="$1" out="" c
+    while [[ -n "$rest" ]]; do
+        c="${rest[1]}"
+        if [[ "$c" == '"' ]]; then
+            break
+        elif [[ "$c" == '\' ]]; then
+            case "${rest[2]}" in
+                n|t|r) out+=" " ;;
+                *) out+="${rest[2]}" ;;
+            esac
+            rest="${rest[3,-1]}"
+        else
+            # Plain text up to the next quote or backslash, in one step.
+            local plain="${rest%%[\"\\]*}"
+            out+="$plain"
+            rest="${rest[${#plain}+1,-1]}"
+        fi
+    done
+    print -r -- "$out"
+}
+
+# The last value Claude wrote for a field of a line type, or nothing.
+_dev_jsonl_last() {
+    local line="$(grep -a -F "\"type\":\"$2\",\"$3\":\"" "$1" 2>/dev/null | tail -1)"
+    [[ -n "$line" ]] || return 0
+    _dev_json_text "${line#*\"$3\":\"}"
+}
+
+# What a conversation was about, from Claude's file: when it last changed, its
+# title (one given with /rename first), and the last thing typed, separated by
+# \x1f. Fails, printing nothing, when there is no file. Claude's format is not a
+# published interface: a field it no longer writes leaves that part empty.
+# Remembered per file, size and time, so a dashboard redraw reads nothing again.
+typeset -gA _dev_summary_cache
+_dev_conversation_summary() {
+    local file="$(_dev_claude_conversation_file "$1")"
+    [[ -n "$file" ]] || return 1
+    zmodload -F zsh/stat b:zstat 2>/dev/null
+    zmodload zsh/datetime 2>/dev/null
+    local -A st
+    zstat -H st -- "$file" 2>/dev/null || return 1
+    local cache_key="${file}:${st[size]}:${st[mtime]}"
+    if [[ -z "${_dev_summary_cache[$cache_key]+set}" ]]; then
+        local updated title
+        strftime -s updated '%b %d %H:%M' "${st[mtime]}"
+        title="$(_dev_jsonl_last "$file" custom-title customTitle)"
+        [[ -n "$title" ]] || title="$(_dev_jsonl_last "$file" ai-title aiTitle)"
+        _dev_summary_cache[$cache_key]="${updated}"$'\x1f'"${title}"$'\x1f'"$(_dev_jsonl_last "$file" last-prompt lastPrompt)"
+    fi
+    print -r -- "${_dev_summary_cache[$cache_key]}"
+}
+
+# A summary in a few words: the title, or else the last prompt, then the time.
+_dev_conversation_line() {
+    local updated title last
+    IFS=$'\x1f' read -r updated title last <<< "$1"
+    [[ -n "$updated" ]] || return 0
+    local what="${title:-${last:+\"${last}\"}}"
+    print -r -- "${what:+${what} · }${updated}"
 }
 
 _dev_stamp_workspace() {
@@ -1151,7 +1231,7 @@ _dev_grid_kill() {
             old="$(tmux show-options -w -t "$window_id" -qv @dev_agent_sid)"
             cmd="$(tmux show-options -w -t "$window_id" -qv @dev_ai_cmd)"
             if [[ "${${cmd:-$(_dev_agent_cfg ai_cmd)}:t}" == claude && -n "$old" ]]; then
-                resumes+=("claude --resume ${old}")
+                resumes+=("claude --resume ${old}$(_dev_conversation_line "$(_dev_conversation_summary "$old")" | sed 's/^/   /')")
             fi
         done || return 1
     fi
@@ -1685,6 +1765,7 @@ dev() {
             case "$2" in
                 start) shift 2; _dev_agent_start "$@" ;;
                 reset) shift 2; _dev_agent_reset "$@" ;;
+                history) shift 2; _dev_agent_history "$@" ;;
                 switch) shift 2; _dev_agent_switch "$@" ;;
                 send) shift 2; _dev_agent_send "$@" ;;
                 status) _dev_agent_status "$3" ;;
@@ -1694,7 +1775,7 @@ dev() {
                     _dev_dashboard "$here" "$(tmux display-message -p '#{client_name}' 2>/dev/null)"
                     ;;
                 *)
-                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|switch|dashboard ...${NC}"
+                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|history|switch|dashboard ...${NC}"
                     return 1
                     ;;
             esac
@@ -2656,6 +2737,42 @@ _dev_agent_reset() {
     return 0
 }
 
+# Every conversation a tab has had, newest first: a reset or `dev grid kill
+# --fresh` moves a tab on, and each id before it is derived again here, with
+# what Claude saved of it, so the right one is the one resumed.
+_dev_agent_history() {
+    local ws="$1"
+    if [[ -z "$ws" ]]; then
+        echo -e "${RED}Usage: dev agent history <tab|label|path>${NC}"
+        return 1
+    fi
+    local repo grid_session index
+    _dev_agent_grid || return 1
+    index="$(_dev_agent_resolve "$ws")" || return 1
+    local target="=${grid_session}:${index}"
+    local key="$(_dev_text_get -w -t "$target" @dev_agent_key)"
+    if [[ -z "$key" ]]; then
+        echo -e "${RED}Error: tab ${index} has no conversations; reopen the grid with 'dev grid'${NC}"
+        return 1
+    fi
+    local window_id="$(tmux display-message -p -t "$target" '#{window_id}')"
+    local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
+    local n="$(_dev_agent_generation "$key")" g id tag summary updated title last pad="           "
+    print -r -- "Tab ${index} (${label}): $(_dev_plural $(( n + 1 )) conversation), newest first"
+    for (( g = n; g >= 0; g-- )); do
+        id="$(_dev_agent_sid_at "$key" "$g")"
+        (( g == n )) && tag="current" || tag="earlier"
+        if summary="$(_dev_conversation_summary "$id")"; then
+            IFS=$'\x1f' read -r updated title last <<< "$summary"
+            print -r -- "  ${(r:9:: :)tag}${updated}  ${title:-(no title)}"
+            [[ -n "$last" ]] && print -r -- "${pad}last: \"${last}\""
+        else
+            print -r -- "  ${(r:9:: :)tag}nothing saved yet"
+        fi
+        print -r -- "${pad}claude --resume ${id}"
+    done
+}
+
 _dev_agent_switch() {
     local pane="" client="" ws="" choice="" force=0
     while (( $# )); do
@@ -2940,20 +3057,28 @@ _dev_agent_status() {
         (( ${#name} > width )) && width=${#name}
         (( ${#branch} > bwidth )) && bwidth=${#branch}
     done
-    (( json )) || printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %s\n" "#" "workspace" "branch" "state" "agent" "detail"
+    (( json )) || printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %-12s %-40s %s\n" "#" "workspace" "branch" "state" "agent" "updated" "conversation" "detail"
+    local updated title last conversation j_updated j_title j_last
     for row in "${rows[@]}"; do
         IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
+        updated="" title="" last=""
+        IFS="$us" read -r updated title last <<< "$(_dev_conversation_summary "$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_agent_sid)")"
         if (( json )); then
             # dirty is a count, or null when git could not say.
             [[ "$changes" == <-> ]] && state="$changes" || state=null
-            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${state},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null}}"
+            j_updated=null j_title=null j_last=null
+            [[ -n "$updated" ]] && j_updated="$(_dev_json_str "$updated")"
+            [[ -n "$title" ]] && j_title="$(_dev_json_str "$title")"
+            [[ -n "$last" ]] && j_last="$(_dev_json_str "$last")"
+            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${state},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null},\"updated\":${j_updated},\"title\":${j_title},\"last_prompt\":${j_last}}"
         else
             if [[ "$changes" == <-> ]]; then
                 (( changes )) && state="${changes} changed" || state="clean"
             else
                 state="$changes"
             fi
-            printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %s\n" "$index" "$name" "$branch" "$state" "$agent" "${detail}${ctx:+ (ctx ${ctx}%)}"
+            conversation="${title:-${last:+\"${last}\"}}"
+            printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %-12s %s %s\n" "$index" "$name" "$branch" "$state" "$agent" "${updated:--}" "$(_dev_fit "${conversation:--}" 40)" "${detail}${ctx:+ (ctx ${ctx}%)}"
         fi
     done
 }
@@ -3212,7 +3337,7 @@ _dev_dashboard_frame() {
     print -r -- "${root_prefix}${colour[$coord_state]:-}$(_dev_fit "$root_text" $(( width - ${#root_prefix} )))${reset}"
     (( ${#rows} )) && print -r -- " │"
 
-    local k branch_mark stem changes_text state_plain tab_cmd default_cmd="$(_dev_agent_cfg ai_cmd)"
+    local k branch_mark stem changes_text state_plain tab_cmd conversation default_cmd="$(_dev_agent_cfg ai_cmd)"
     for (( k = 1; k <= ${#rows}; k++ )); do
         IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "${rows[k]}"
         if (( k == ${#rows} )); then
@@ -3235,6 +3360,8 @@ _dev_dashboard_frame() {
         esac
         print -r -- "${stem}${colour[$agent]:-}$(_dev_fit "$state_plain" $(( width - 6 )))${reset}"
         [[ -n "$detail" ]] && print -r -- "${stem}$(_dev_fit "\"${detail}\"" $(( width - 6 )))"
+        conversation="$(_dev_conversation_line "$(_dev_conversation_summary "$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_agent_sid 2>/dev/null)")")"
+        [[ -n "$conversation" ]] && print -r -- "${stem}${colour[none]}$(_dev_fit "$conversation" $(( width - 6 )))${reset}"
     done
     print
     print -r -- "$(_dev_fit " 1-9 select · Enter go to tab · a open its agent · s start its agent · t switch tool · q close" "$width")"

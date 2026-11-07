@@ -231,7 +231,7 @@ tab2_agent_command() {
     fake_agent_showing claude-2.1.286-waiting-trust.txt
     agent_cmd "$REPO" start 2
     agent_cmd "$REPO" status
-    [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +waiting\ +Quick\ safety\ check ]]
+    [[ "$output" =~ 2\ +myrepo-feat\ +feat\ +clean\ +waiting\ +-\ +-\ +Quick\ safety\ check ]]
     agent_cmd "$REPO" status --json
     printf '%s\n' "$output" | python3 -c '
 import json, sys
@@ -264,7 +264,7 @@ assert rows[1]["detail"].startswith("Quick safety check"), rows[1]'
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert [r["tab"] for r in rows] == [1, 2], rows
-assert set(rows[0]) == {"tab", "label", "path", "branch", "dirty", "agent", "detail", "ctx"}, rows[0]
+assert set(rows[0]) == {"tab", "label", "path", "branch", "dirty", "agent", "detail", "ctx", "updated", "title", "last_prompt"}, rows[0]
 assert rows[1]["agent"] == "idle" and rows[1]["ctx"] == 7, rows[1]'
 }
 
