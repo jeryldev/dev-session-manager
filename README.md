@@ -150,7 +150,8 @@ reset prints the `claude --resume <id>` that reopens it. `dev agent history <tab
 
 **Which conversation is which.** `dev agent status`, the dashboard, `dev grid kill --fresh` and
 `dev agent history` show each conversation's title (one given with `/rename` first, else Claude's
-own), the last thing typed in it, and when it last changed. They read the file Claude keeps the
+own, else the first thing typed), the last thing typed in it, and when it last changed. They read
+the end of the file Claude keeps the
 conversation in, under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR`). That format is Claude's, not a
 published one: what dev cannot read there is left blank, never an error. agy tabs show none of it.
 

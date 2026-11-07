@@ -264,7 +264,7 @@ assert rows[1]["detail"].startswith("Quick safety check"), rows[1]'
 import json, sys
 rows = [json.loads(l) for l in sys.stdin]
 assert [r["tab"] for r in rows] == [1, 2], rows
-assert set(rows[0]) == {"tab", "label", "path", "branch", "dirty", "agent", "detail", "ctx", "updated", "title", "last_prompt"}, rows[0]
+assert set(rows[0]) == {"tab", "label", "path", "branch", "dirty", "agent", "detail", "ctx", "updated", "title", "last_prompt", "first_prompt"}, rows[0]
 assert rows[1]["agent"] == "idle" and rows[1]["ctx"] == 7, rows[1]'
 }
 

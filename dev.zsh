@@ -677,9 +677,32 @@ _dev_jsonl_last() {
     _dev_json_text "${line#*\"$3\":\"}"
 }
 
+# The first thing typed in a conversation, cut to 80 characters. Claude writes
+# lines as from the user that nobody typed: notices and a summary after
+# compaction (marked), a slash command and its output (in tags), an
+# interruption (in brackets), tool results (not text). Those are skipped.
+_dev_jsonl_first_prompt() {
+    local line text
+    grep -a -F -e '"role":"user","content":"' -e '"role":"user","content":[{"type":"text","text":"' "$1" 2>/dev/null \
+        | grep -a -v -F -e '"isMeta":true' -e '"isCompactSummary":true' \
+        | while IFS= read -r line; do
+            line="${line#*\"role\":\"user\",\"content\":}"
+            if [[ "$line" == '"'* ]]; then
+                line="${line#\"}"
+            else
+                line="${line#\[\{\"type\":\"text\",\"text\":\"}"
+            fi
+            text="$(_dev_json_text "$line")"
+            [[ -z "${text//[[:space:]]/}" || "$text" == '<'* || "$text" == '[Request interrupted'* ]] && continue
+            (( ${#text} > 80 )) && text="${text[1,79]}…"
+            print -r -- "$text"
+            break
+        done
+}
+
 # What a conversation was about, from Claude's file: when it last changed, its
-# title (one given with /rename first), and the last thing typed, separated by
-# \x1f. Fails, printing nothing, when there is no file. Claude's format is not a
+# title (one given with /rename first), the last thing typed and the first,
+# separated by \x1f. Fails, printing nothing, when there is no file. Claude's format is not a
 # published interface: a field it no longer writes leaves that part empty.
 # Remembered per file, size and time, so a dashboard redraw reads nothing again.
 typeset -gA _dev_summary_cache
@@ -696,17 +719,31 @@ _dev_conversation_summary() {
         strftime -s updated '%b %d %H:%M' "${st[mtime]}"
         title="$(_dev_jsonl_last "$file" custom-title customTitle)"
         [[ -n "$title" ]] || title="$(_dev_jsonl_last "$file" ai-title aiTitle)"
-        _dev_summary_cache[$cache_key]="${updated}"$'\x1f'"${title}"$'\x1f'"$(_dev_jsonl_last "$file" last-prompt lastPrompt)"
+        _dev_summary_cache[$cache_key]="${updated}"$'\x1f'"${title}"$'\x1f'"$(_dev_jsonl_last "$file" last-prompt lastPrompt)"$'\x1f'"$(_dev_jsonl_first_prompt "$file")"
     fi
     print -r -- "${_dev_summary_cache[$cache_key]}"
 }
 
-# A summary in a few words: the title, or else the last prompt, then the time.
+# What to call a conversation: its title, or else the first thing typed, or
+# else the last, quoted as typed.
+_dev_conversation_name() {
+    local title="$1" last="$2" first="$3"
+    if [[ -n "$title" ]]; then
+        print -r -- "$title"
+    elif [[ -n "$first" ]]; then
+        print -r -- "\"${first}\""
+    elif [[ -n "$last" ]]; then
+        print -r -- "\"${last}\""
+    fi
+    return 0
+}
+
+# A summary in a few words: what to call it, then the time.
 _dev_conversation_line() {
-    local updated title last
-    IFS=$'\x1f' read -r updated title last <<< "$1"
+    local updated title last first
+    IFS=$'\x1f' read -r updated title last first <<< "$1"
     [[ -n "$updated" ]] || return 0
-    local what="${title:-${last:+\"${last}\"}}"
+    local what="$(_dev_conversation_name "$title" "$last" "$first")"
     print -r -- "${what:+${what} · }${updated}"
 }
 
@@ -2760,15 +2797,16 @@ _dev_agent_history() {
     fi
     local window_id="$(tmux display-message -p -t "$target" '#{window_id}')"
     local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
-    local n="$(_dev_agent_generation "$key")" g id tag summary updated title last pad="           "
+    local n="$(_dev_agent_generation "$key")" g id tag summary updated title last first name pad="           "
     print -r -- "Tab ${index} (${label}): $(_dev_plural $(( n + 1 )) conversation), newest first"
     for (( g = n; g >= 0; g-- )); do
         id="$(_dev_agent_sid_at "$key" "$g")"
         (( g == n )) && tag="current" || tag="earlier"
         if summary="$(_dev_conversation_summary "$id")"; then
-            IFS=$'\x1f' read -r updated title last <<< "$summary"
-            print -r -- "  ${(r:9:: :)tag}${updated}  ${title:-(no title)}"
-            [[ -n "$last" ]] && print -r -- "${pad}last: \"${last}\""
+            IFS=$'\x1f' read -r updated title last first <<< "$summary"
+            name="$(_dev_conversation_name "$title" "$last" "$first")"
+            print -r -- "  ${(r:9:: :)tag}${updated}  ${name:-(no title)}"
+            [[ -n "$last" && "$name" != "\"${last}\"" ]] && print -r -- "${pad}last: \"${last}\""
         else
             print -r -- "  ${(r:9:: :)tag}nothing saved yet"
         fi
@@ -3061,26 +3099,27 @@ _dev_agent_status() {
         (( ${#branch} > bwidth )) && bwidth=${#branch}
     done
     (( json )) || printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %-12s %-40s %s\n" "#" "workspace" "branch" "state" "agent" "updated" "conversation" "detail"
-    local updated title last conversation j_updated j_title j_last
+    local updated title last first conversation j_updated j_title j_last j_first
     for row in "${rows[@]}"; do
         IFS="$us" read -r index name workspace branch changes agent ctx detail <<< "$row"
-        updated="" title="" last=""
-        IFS="$us" read -r updated title last <<< "$(_dev_conversation_summary "$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_agent_sid)")"
+        updated="" title="" last="" first=""
+        IFS="$us" read -r updated title last first <<< "$(_dev_conversation_summary "$(tmux show-options -w -t "=${grid_session}:${index}" -qv @dev_agent_sid)")"
         if (( json )); then
             # dirty is a count, or null when git could not say.
             [[ "$changes" == <-> ]] && state="$changes" || state=null
-            j_updated=null j_title=null j_last=null
+            j_updated=null j_title=null j_last=null j_first=null
             [[ -n "$updated" ]] && j_updated="$(_dev_json_str "$updated")"
             [[ -n "$title" ]] && j_title="$(_dev_json_str "$title")"
             [[ -n "$last" ]] && j_last="$(_dev_json_str "$last")"
-            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${state},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null},\"updated\":${j_updated},\"title\":${j_title},\"last_prompt\":${j_last}}"
+            [[ -n "$first" ]] && j_first="$(_dev_json_str "$first")"
+            print -r -- "{\"tab\":${index},\"label\":$(_dev_json_str "$name"),\"path\":$(_dev_json_str "$workspace"),\"branch\":$(_dev_json_str "$branch"),\"dirty\":${state},\"agent\":\"${agent}\",\"detail\":$(_dev_json_str "$detail"),\"ctx\":${ctx:-null},\"updated\":${j_updated},\"title\":${j_title},\"last_prompt\":${j_last},\"first_prompt\":${j_first}}"
         else
             if [[ "$changes" == <-> ]]; then
                 (( changes )) && state="${changes} changed" || state="clean"
             else
                 state="$changes"
             fi
-            conversation="${title:-${last:+\"${last}\"}}"
+            conversation="$(_dev_conversation_name "$title" "$last" "$first")"
             printf "  %-3s %-${width}s  %-${bwidth}s  %-10s %-8s %-12s %s %s\n" "$index" "$name" "$branch" "$state" "$agent" "${updated:--}" "$(_dev_fit "${conversation:--}" 40)" "${detail}${ctx:+ (ctx ${ctx}%)}"
         fi
     done
