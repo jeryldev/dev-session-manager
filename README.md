@@ -134,6 +134,8 @@ dev agent reset 2             # tab 2's next agent starts a new conversation, wi
                               # (--cmd <tool> to also switch its AI tool; --force if it is running)
 dev agent history 2           # every conversation tab 2 has had, newest first: when, title, last
                               # prompt, and the claude --resume that reopens it
+dev agent resume 2            # tab 2 goes back to its previous conversation and keeps it
+dev agent resume 2 <id>       # ...or to any id dev agent history 2 lists (--force if it is running)
 dev agent switch 2 agy        # switch tab 2's AI tool (or press prefix + A in the tab)
 dev agent dashboard           # the prefix + O dashboard, in this terminal
 ```
@@ -146,7 +148,10 @@ select the tab, as tmux's own do.
 `prefix + a` starts it again on the *same* conversation, because a tab's conversation id is derived
 from its worktree path (Claude only; see [AI tool customization](#ai-tool-customization)).
 `dev agent reset <tab>` gives the tab a new conversation; the old one stays in Claude's history, and
-reset prints the `claude --resume <id>` that reopens it. `dev agent history <tab>` lists them all.
+reset prints the `claude --resume <id>` that reopens it. `dev agent history <tab>` lists them all,
+and `dev agent resume <tab> [id]` makes one of them the tab's conversation again: every later start,
+a reboot and a rebuilt grid resume it, until the next reset or `dev grid kill --fresh` starts a new
+one. Only claude conversations have ids; an agy tab resumes its last conversation on its own.
 
 **Which conversation is which.** `dev agent status`, the dashboard, `dev grid kill --fresh` and
 `dev agent history` show each conversation's title (one given with `/rename` first, else Claude's

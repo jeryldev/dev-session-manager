@@ -615,14 +615,29 @@ _dev_agent_next_generation() {
     local file="$(_dev_agent_generation_file "$1")"
     mkdir -p "${file:h}" || return 1
     print -r -- "$(( $(_dev_agent_generation "$1") + 1 ))" > "$file" || return 1
+    rm -f "${file}.current"
     [[ "$2" == --fresh ]] && : > "${file}.fresh"
     return 0
+}
+
+# The generation a key's conversation is on: the newest, unless `dev agent
+# resume` went back to an earlier one, which it keeps beside the newest in a
+# .current file. The newest is kept apart so a later reset is always new.
+_dev_agent_current_generation() {
+    local n="$(_dev_agent_generation "$1")" current
+    local file="$(_dev_agent_generation_file "$1").current"
+    [[ -r "$file" ]] && current="$(<"$file")"
+    if [[ "$current" == <-> ]] && (( current <= n )); then
+        print -r -- "$current"
+    else
+        print -r -- "$n"
+    fi
 }
 
 # A workspace's conversation id: derived from its key, so /exit, a reboot and
 # a rebuilt grid all resume the same conversation, until a reset moves it on.
 _dev_agent_sid() {
-    _dev_agent_sid_at "$1" "$(_dev_agent_generation "$1")"
+    _dev_agent_sid_at "$1" "$(_dev_agent_current_generation "$1")"
 }
 
 # The id a key derived at a given generation: every earlier conversation of a
@@ -1279,7 +1294,10 @@ _dev_grid_kill() {
     echo -e "${GREEN}✓ Killed ${grid_session} (and $(_dev_plural ${#popups} popup))${NC}"
     if (( fresh )); then
         echo -e "${GREEN}✓ The next 'dev' starts every tab's agent in a new conversation${NC}"
-        (( ${#resumes} )) && print -rl -- "  The old ones are kept:" "    ${^resumes[@]}"
+        if (( ${#resumes} )); then
+            print -rl -- "  The old ones are kept:" "    ${^resumes[@]}"
+            echo -e "  To go back to one for good, after 'dev': ${BLUE}dev agent resume <tab>${NC}"
+        fi
     fi
     if [[ -n "$REPLY" ]]; then
         tmux kill-session -t "$REPLY"
@@ -1606,6 +1624,7 @@ dev() {
             echo -e "  ${BLUE}dev agent watch${NC}    One line per agent change (--notify --json --for <s>)"
             echo -e "  ${BLUE}dev agent reset <t>${NC} Tab t's next agent starts a new conversation, flags cleared (--cmd <tool> --force)"
             echo -e "  ${BLUE}dev agent history <t>${NC} Tab t's conversations, newest first, each with its claude --resume"
+            echo -e "  ${BLUE}dev agent resume <t>${NC} Tab t goes back to an earlier conversation and keeps it ([id] --force)"
             echo -e "  ${BLUE}dev agent switch <t>${NC} Switch tab t's AI tool (claude / agy)"
             echo -e "  ${BLUE}dev agent dashboard${NC} The prefix O dashboard, in this terminal"
             echo -e "  ${BLUE}dev grid${NC}           One tab per git worktree of this repo"
@@ -1807,6 +1826,7 @@ dev() {
                 start) shift 2; _dev_agent_start "$@" ;;
                 reset) shift 2; _dev_agent_reset "$@" ;;
                 history) shift 2; _dev_agent_history "$@" ;;
+                resume) shift 2; _dev_agent_resume "$@" ;;
                 switch) shift 2; _dev_agent_switch "$@" ;;
                 send) shift 2; _dev_agent_send "$@" ;;
                 status) _dev_agent_status "$3" ;;
@@ -1816,7 +1836,7 @@ dev() {
                     _dev_dashboard "$here" "$(tmux display-message -p '#{client_name}' 2>/dev/null)"
                     ;;
                 *)
-                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|history|switch|dashboard ...${NC}"
+                    echo -e "${RED}Usage: dev agent start|send|status|watch|reset|history|resume|switch|dashboard ...${NC}"
                     return 1
                     ;;
             esac
@@ -2774,7 +2794,94 @@ _dev_agent_reset() {
     echo -e "${GREEN}✓ Tab ${index}'s next agent (${effective_cmd}) starts a new conversation, with no saved flags${NC}"
     if [[ "${effective_cmd:t}" == claude && -n "$old" ]]; then
         echo -e "  The old one is kept: ${BLUE}claude --resume ${old}${NC}"
+        echo -e "  To go back to it for good: ${BLUE}dev agent resume ${index}${NC}"
     fi
+    return 0
+}
+
+# The tab goes back to one of its earlier conversations, and keeps it: every
+# later start, a reboot and a rebuilt grid resume that one, until a reset or
+# `dev grid kill --fresh` starts a new one. With no id, the one before the
+# current. Only claude takes a conversation id; agy resumes its last.
+_dev_agent_resume() {
+    local ws="" id="" force=0
+    while (( $# )); do
+        case "$1" in
+            --force) force=1; shift ;;
+            -*) echo -e "${RED}Error: unknown option $1${NC}"; return 1 ;;
+            *)
+                if [[ -z "$ws" ]]; then
+                    ws="$1"
+                elif [[ -z "$id" ]]; then
+                    id="$1"
+                else
+                    echo -e "${RED}Error: unexpected argument $1${NC}"
+                    return 1
+                fi
+                shift ;;
+        esac
+    done
+    if [[ -z "$ws" ]]; then
+        echo -e "${RED}Usage: dev agent resume <tab|label|path> [id] [--force]${NC}"
+        return 1
+    fi
+    local repo grid_session index
+    _dev_agent_grid || return 1
+    index="$(_dev_agent_resolve "$ws")" || return 1
+    local target="=${grid_session}:${index}"
+    local key="$(_dev_text_get -w -t "$target" @dev_agent_key)"
+    if [[ -z "$key" ]]; then
+        echo -e "${RED}Error: tab ${index} has no conversations; reopen the grid with 'dev grid'${NC}"
+        return 1
+    fi
+    local cmd="$(tmux show-options -w -t "$target" -qv @dev_ai_cmd)"
+    cmd="${cmd:-$(_dev_agent_cfg ai_cmd)}"
+    if [[ "${cmd:t}" != claude ]]; then
+        echo -e "${RED}Error: tab ${index} runs ${cmd}, which keeps no conversation ids; only claude conversations can be resumed${NC}"
+        return 1
+    fi
+    local n="$(_dev_agent_generation "$key")" current="$(_dev_agent_current_generation "$key")" g target_gen=""
+    if [[ -z "$id" ]]; then
+        if (( current == 0 )); then
+            echo -e "${RED}Error: tab ${index} has no earlier conversation to resume${NC}"
+            return 1
+        fi
+        target_gen=$(( current - 1 ))
+        id="$(_dev_agent_sid_at "$key" "$target_gen")"
+    else
+        for (( g = n; g >= 0; g-- )); do
+            [[ "$(_dev_agent_sid_at "$key" "$g")" == "$id" ]] && { target_gen=$g; break; }
+        done
+        if [[ -z "$target_gen" ]]; then
+            echo -e "${RED}Error: ${id} is not one of tab ${index}'s conversations; see 'dev agent history ${index}'${NC}"
+            return 1
+        fi
+    fi
+    if (( target_gen == current )); then
+        echo -e "${GREEN}✓ Tab ${index} is already on that conversation${NC}"
+        return 0
+    fi
+    local ws_id="$(tmux show-options -w -t "$target" -qv @dev_ws_id)" running
+    if running="$(_dev_agent_session_of "$ws_id")"; then
+        if (( ! force )); then
+            echo -e "${RED}Error: the agent for tab ${index} is running; /exit it first, or pass --force to stop it${NC}"
+            return 1
+        fi
+        tmux kill-session -t "=${running}" 2>/dev/null
+    fi
+    local file="$(_dev_agent_generation_file "$key")"
+    mkdir -p "${file:h}" || return 1
+    if (( target_gen == n )); then
+        rm -f "${file}.current"
+    else
+        print -r -- "$target_gen" > "${file}.current" || return 1
+    fi
+    tmux set-option -w -t "$target" @dev_agent_sid "$id"
+    tmux set-option -w -t "$target" -u @dev_agent_started 2>/dev/null
+    local line="$(_dev_conversation_line "$(_dev_conversation_summary "$id")")"
+    echo -e "${GREEN}✓ Tab ${index}'s agent resumes ${id} from its next start${NC}"
+    [[ -n "$line" ]] && echo "  ${line}"
+    echo -e "  Start it now with ${BLUE}dev agent start ${index}${NC}, or prefix + a in the tab"
     return 0
 }
 
@@ -2798,11 +2905,18 @@ _dev_agent_history() {
     fi
     local window_id="$(tmux display-message -p -t "$target" '#{window_id}')"
     local label="$(_dev_window_label "$window_id" "$(tmux display-message -p -t "$window_id" '#{window_name}')")"
-    local n="$(_dev_agent_generation "$key")" g id tag summary updated title last first name pad="           "
+    local n="$(_dev_agent_generation "$key")" current="$(_dev_agent_current_generation "$key")"
+    local g id tag summary updated title last first name pad="           "
     print -r -- "Tab ${index} (${label}): $(_dev_plural $(( n + 1 )) conversation), newest first"
     for (( g = n; g >= 0; g-- )); do
         id="$(_dev_agent_sid_at "$key" "$g")"
-        (( g == n )) && tag="current" || tag="earlier"
+        if (( g == current )); then
+            tag="current"
+        elif (( g > current )); then
+            tag="later"
+        else
+            tag="earlier"
+        fi
         if summary="$(_dev_conversation_summary "$id")"; then
             IFS=$'\x1f' read -r updated title last first <<< "$summary"
             name="$(_dev_conversation_name "$title" "$last" "$first")"
